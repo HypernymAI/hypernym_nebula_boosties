@@ -59,7 +59,9 @@ Gates (owner)
       and `/api/status?user_email=` (any user's balance) per ClaudeStorm's CLAUDE.md. Anyone who installs the plugin can
       read it. Options: a separate login-only app whose credential can do nothing else, or the keyless invite-list
       login start; rotate the claudestorm secret if the repo was ever pushed with it.
-- [ ] publish at all; repo `HypernymAI/hypernym-nebula` (used in the install boxes — confirm) + visibility
+- [x] repo: **private** `HypernymAI/hypernym-nebula` created + pushed (owner, 2026-09-27: "private first"); the
+      website box installs both plugins from it (verified in a throwaway HOME with GitHub access)
+- [ ] make it public (owner) — only after the app-credential blocker is fixed
 - [ ] H06_S2 (claim beyond evidence): ship · gate harder · drop — fails probe v2.1 (p95 0.00156 vs 0.00054); H15_S6 fails by a tie (0.00407 vs 0.00405)
 - [x] weights confirmed first-hand (leakage-gated + author names scrubbed, S34; ungated originals stay in `ctxshield-plugin/private_models/`)
 - [ ] GitHub OAuth callback — closes on one real `hypernym login` / `hypernym github link` from a rider machine
