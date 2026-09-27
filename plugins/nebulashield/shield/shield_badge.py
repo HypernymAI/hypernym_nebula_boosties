@@ -163,7 +163,7 @@ def main() -> None:
         try:
             bg = background(db.parent / 'termbg.json')           # the REAL background of this tab (S26e)
         except RuntimeError as e:                                # SHOWN, never replaced by a guessed colour
-            print(render(levels) + note + f"  \x1b[38;2;255;60;60m✖ logo background: {e}{RESET}")
+            print(render(levels, brand['icons'] is True) + note + f"  \x1b[38;2;255;60;60m✖ logo background: {e}{RESET}")
             return
     else:
         bg = tuple(brand['bg'])
