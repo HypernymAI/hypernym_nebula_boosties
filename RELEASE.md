@@ -33,8 +33,8 @@ other's files go through a message.
 ## Release checklist
 
 Build
-- [x] marketplace renamed `hypernym-nebula` (Claude Code + Codex manifests); plugin `ctxshield` → `nebulashield` 0.3.0
-      (commands `/nebulashield:*`, data `~/.nebulashield`); hypernym 0.5.0
+- [x] marketplace renamed `hypernym-nebula` (Claude Code + Codex manifests); plugin `ctxshield` → `nebulashield` 0.3.2
+      (commands `/nebulashield:*`, data `~/.nebulashield`); hypernym 0.5.1
 - [x] `plugins/nebulashield/` synced — refuses ungated/private/personal content; 154 files, 19.2 MB; old `plugins/ctxshield/` removed
 - [x] `claude plugin validate .` + both plugins `--strict` pass
 - [x] shared status line byte-identical in both plugins (written + verified by the sync)
@@ -62,6 +62,9 @@ Gates (owner)
 - [x] repo: **private** `HypernymAI/hypernym-nebula` created + pushed (owner, 2026-09-27: "private first"); the
       website box installs both plugins from it (verified in a throwaway HOME with GitHub access)
 - [ ] make it public (owner) — only after the app-credential blocker is fixed
+- [x] access mirrored from fieldConstrictor: team `hypernym-devs` = write (push); org defaults for everyone else
+- [ ] outside collaborator `mary-octavia` (write on fieldConstrictor) — NOT invited: would be the first
+      non-member able to read the embedded app credential; owner's call
 - [ ] H06_S2 (claim beyond evidence): ship · gate harder · drop — fails probe v2.1 (p95 0.00156 vs 0.00054); H15_S6 fails by a tie (0.00407 vs 0.00405)
 - [x] weights confirmed first-hand (leakage-gated + author names scrubbed, S34; ungated originals stay in `ctxshield-plugin/private_models/`)
 - [ ] GitHub OAuth callback — closes on one real `hypernym login` / `hypernym github link` from a rider machine
