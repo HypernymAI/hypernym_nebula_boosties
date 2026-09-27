@@ -1,0 +1,9 @@
+{
+  "name": "hypernym",
+  "description": "Hypernym plugins for Claude Code",
+  "owner": { "name": "Hypernym" },
+  "plugins": [
+    { "name": "hypernym", "source": "./plugins/hypernym",
+      "description": "Repo analyze for the current repo: floats, jobs, packages with drift." }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "hypernym",
+  "interface": { "displayName": "Hypernym" },
+  "plugins": [
+    { "name": "hypernym", "source": "./plugins/hypernym", "category": "developer-tools" }
+  ]
+}

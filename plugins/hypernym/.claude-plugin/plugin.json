@@ -1,0 +1,8 @@
+{
+  "name": "hypernym",
+  "version": "0.2.0",
+  "description": "Hypernym tools for Claude Code: repo analyze for the current repo: floats, jobs, packages with drift.",
+  "author": { "name": "Hypernym" },
+  "homepage": "https://hypernym.ai",
+  "license": "UNLICENSED"
+}
