@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-hypernym-nebula SHARED status line — ONE file, byte-identical in BOTH plugins of the hypernym-nebula marketplace:
-  nebulashield  plugin/shield/nebula_statusline.py
-  hypernym      skills/hypernym/scripts/nebula_statusline.py
+hypernym-nebula SHARED status line — byte-identical in BOTH plugins of the hypernym-nebula marketplace, together with
+the Hypernym logo code it draws (SHARED below: brand.py, termbg.py, brand_assets/wings_candidates.json):
+  nebulashield  plugin/shield/
+  hypernym      skills/hypernym/scripts/
 Standard library only. No network. It never imports either plugin; it only RUNS their status-line programs.
 
     nebula_statusline.py compose             the status line itself (stdin: Claude Code's status-line JSON)
@@ -17,8 +18,11 @@ Which plugins are installed is read from Claude Code's OWN registry on every ref
 uninstalling a plugin leaves its files on disk (measured, build doc S35-pre). So install / uninstall / disable of either
 plugin, in any order, shows up within one refresh.
 
-Rows: nebulashield's rows (logo + badge) first; hypernym's Zephyr line appended to the LAST of them, or alone when the
-shield is not installed. A part that fails shows "✖ <plugin>: <reason>" — never a blank line.
+Rows (S39): whenever EITHER plugin is installed, the Hypernym braille logo (3 rows, gentle shine, alpha against the
+terminal's real background) is drawn at the left; the MIDDLE row carries nebulashield's judgement row (if installed)
+and the wings + HYPERNYM.ai wordmark; hypernym's Zephyr line rides the LAST row. Brand settings come from nebulashield's
+settings when present (~/.nebulashield/config.json → brand), else BRAND_DEFAULTS (= nebulashield's shipped defaults).
+A part that fails shows "✖ <plugin>: <reason>" — never a blank line.
 NO .get(). Imports at top.
 """
 import json
@@ -31,7 +35,10 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = 1                                   # a newer copy is never overwritten by an older one (refresh)
+from brand import icon, logo, wings_icon
+from termbg import background
+
+VERSION = 2                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'
 ORDER = ('nebulashield', 'hypernym')          # row order: shield rows, then the Zephyr line
 NICE = {'nebulashield': 'nebulashield (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}
@@ -41,6 +48,10 @@ COPY = BIN / 'nebula_statusline.py'
 LAUNCHER = BIN / 'statusline'
 OFF = HOME_DIR / 'statusline_off'             # written by `remove`: SessionStart will not re-add the status line
 TIMEOUT_S = 4.0
+SHARED = ('nebula_statusline.py', 'brand.py', 'termbg.py', 'brand_assets/wings_candidates.json')
+BRAND_DEFAULTS = {'enabled': True, 'bg': 'auto', 'icons': True, 'mark': 'mid', 'mode': 'gentle', 'rest_alpha': 0.1,
+                  'wings': 76}
+SHIELD_CONFIG = Path.home() / '.nebulashield' / 'config.json'
 RECOGNIZED = ('.hypernym-nebula/bin/statusline',  # ours
               '.hypernym/bin/statusline', 'compose_statusline.py',    # hypernym ≤ 0.4 composer
               'ctxshield-badge', 'shield_badge.py')                   # ctxshield ≤ 0.2 badge / hand-made one-liner
@@ -98,7 +109,7 @@ def shield_ready(root: Path) -> bool:
 
 def part_argv(name: str, root: Path) -> list:
     if name == 'nebulashield':
-        return [str(root / 'bin' / 'nebulashield-run'), 'shield_badge.py']
+        return [str(root / 'bin' / 'nebulashield-run'), 'shield_badge.py', '--row']
     return [sys.executable, str(root / 'skills' / 'hypernym' / 'scripts' / 'statusline.py')]
 
 
@@ -158,14 +169,47 @@ def compose(event: str) -> list:
         except subprocess.TimeoutExpired:
             os.killpg(p.pid, signal.SIGTERM)       # the whole part (uv → python), so a hang never piles up
             out[name] = [f"✖ {name}: no answer within {TIMEOUT_S:.0f} s"]
-    rows = list(out['nebulashield']) if 'nebulashield' in out else []
-    if 'hypernym' in out:
-        z = '  '.join(out['hypernym'])
+    return layout(out['nebulashield'] if 'nebulashield' in out else [],
+                  '  '.join(out['hypernym']) if 'hypernym' in out else '', time.time())
+
+
+def brand_cfg() -> dict:
+    c = load_json(SHIELD_CONFIG)
+    return {**BRAND_DEFAULTS, **(c['brand'] if 'brand' in c else {})}
+
+
+def plain(shield: list, zephyr: str) -> list:
+    rows = list(shield)
+    if zephyr:
         if rows:
-            rows[-1] = f"{rows[-1]}  {z}"
+            rows[-1] = f"{rows[-1]}  {zephyr}"
         else:
-            rows = [z]
+            rows = [zephyr]
     return rows
+
+
+def layout(shield: list, zephyr: str, now: float) -> list:
+    b = brand_cfg()
+    if b['enabled'] is not True:
+        return plain(shield, zephyr)
+    if b['bg'] == 'auto':
+        try:
+            bg = background(HOME_DIR / 'termbg.json')              # the REAL background of this tab (S26e)
+        except RuntimeError as e:                                  # SHOWN, never replaced by a guessed colour
+            rows = plain(shield, zephyr) or ['']
+            rows[-1] = f"{rows[-1]}  \x1b[38;2;255;60;60m✖ logo background: {e}\x1b[0m".lstrip()
+            return rows
+    else:
+        bg = tuple(b['bg'])
+    rows, word = logo(now, bg, b['mode'], b['rest_alpha'], b['mark'])
+    if b['icons'] is True:
+        word = icon(wings_icon(b['wings'])) + ' ' + word          # the chosen wings (contact sheet #)
+    k = (len(rows) - 1) // 2                                       # mid 3 rows → 1 · compact 1 → 0
+    lines = list(rows)
+    lines[k] = '  '.join([lines[k]] + list(shield) + [word])
+    if zephyr:
+        lines[-1] = f"{lines[-1]}  {zephyr}"
+    return lines
 
 
 # ---------------------------------------------------------------------------------------------------- refresh
@@ -175,13 +219,17 @@ def version_of(p: Path) -> int:
 
 
 def refresh() -> None:
-    """Copy this file to ~/.hypernym-nebula/bin (never over a newer copy) and write the launcher (only if changed)."""
+    """Copy the SHARED files to ~/.hypernym-nebula/bin (never over a newer set) and write the launcher (if changed)."""
     BIN.mkdir(parents=True, exist_ok=True)
-    me = Path(__file__).resolve()
-    if version_of(COPY) <= VERSION and (not COPY.exists() or COPY.read_bytes() != me.read_bytes()):
-        tmp = COPY.with_suffix('.tmp')
-        shutil.copyfile(me, tmp)
-        tmp.replace(COPY)
+    here = Path(__file__).resolve().parent
+    if version_of(COPY) <= VERSION:
+        for rel in SHARED:
+            src, dst = here / rel, BIN / rel
+            if not dst.exists() or dst.read_bytes() != src.read_bytes():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dst.with_name(dst.name + '.tmp')
+                shutil.copyfile(src, tmp)
+                tmp.replace(dst)
     text = ("#!/bin/sh\n"
             "# hypernym-nebula status line — written by the nebulashield / hypernym plugins on session start.\n"
             "# Shows whichever of the two is installed (read from Claude Code's plugin registry every refresh).\n"

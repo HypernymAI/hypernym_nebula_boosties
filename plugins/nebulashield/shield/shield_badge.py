@@ -15,7 +15,9 @@ checkpoint for it? Both → start sync_one.py detached (one lock per session) an
 shown as failed (traceback in <db dir>/sync.log), never hidden. While a turn is running the badge marks the shown
 score as the previous reply's (⋯).
 
-    echo '{"session_id": "…"}' | <python> shield_badge.py [--config config.json]
+    echo '{"session_id": "…"}' | <python> shield_badge.py [--config config.json] [--row]
+--row: ONLY the judgement row (shield icon + four bars + note). The shared hypernym-nebula status line
+(nebula_statusline.py) draws the Hypernym logo, its shine and the wordmark around it — for either plugin (S39).
 NO .get().
 """
 import noegress                                   # noqa: F401 — FIRST: the no-network guarantee (noegress.py)
@@ -108,6 +110,7 @@ def render(levels: dict, icons: bool) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', default=None)
+    ap.add_argument('--row', action='store_true')
     args = ap.parse_args()
     event = json.load(sys.stdin)
     cfg_path = resolve_config(args.config)
@@ -154,6 +157,9 @@ def main() -> None:
         if k not in levels or lv > levels[k][0]:
             levels[k] = (lv, cert)
     brand = cfg['brand']
+    if args.row:
+        print(render(levels, brand['icons'] is True) + note)
+        return
     if brand['enabled'] is not True:
         print(render(levels, False) + note)
         return
