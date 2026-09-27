@@ -22,6 +22,7 @@ from transcript_state import turn_ended
 
 PROJECTS = Path.home() / '.claude' / 'projects'
 LIVE_S = 300
+FINAL_S = 86400                    # untouched for a day: the transcript is final — record what is there (S38)
 
 
 def main() -> None:
@@ -60,7 +61,8 @@ def main() -> None:
         if tr.unchanged(f):
             skipped += 1
             continue
-        r = tr.sync_session(f, last_turn_complete=turn_ended(f))
+        final = time.time() - f.stat().st_mtime > FINAL_S
+        r = tr.sync_session(f, last_turn_complete=final or turn_ended(f))
         tot_p += r['new_pilot_turns']
         tot_r += r['new_replies']
         done += 1
