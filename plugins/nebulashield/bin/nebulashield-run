@@ -1,0 +1,18 @@
+#!/bin/sh
+# nebulashield launcher: run one of the plugin's Python entry points inside the plugin's OWN environment.
+#   nebulashield-run <script.py> [args...]
+# The environment is created by uv on first use (Python 3.13 + numpy, pinned by uv.lock) inside this plugin directory.
+# That one-time install is the ONLY time anything is downloaded, and it downloads packages — never your data.
+# Everything after that runs offline under noegress.py.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+UV="$(command -v uv 2>/dev/null)"
+for c in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
+  if [ -z "$UV" ] && [ -x "$c" ]; then UV="$c"; fi
+done
+if [ -z "$UV" ]; then
+  echo "nebulashield needs uv — install: curl -LsSf https://astral.sh/uv/install.sh | sh — then start a new session" >&2
+  exit 1
+fi
+SCRIPT="$1"
+shift
+exec "$UV" run --project "$ROOT" --frozen --quiet --no-dev python "$ROOT/shield/$SCRIPT" "$@"

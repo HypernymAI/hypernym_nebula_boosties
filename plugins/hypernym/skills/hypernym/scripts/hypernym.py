@@ -14,7 +14,7 @@ Hypernym CLI for Claude Code / Codex skills. Standard library only.
 Common: --dir PATH (repo; default cwd).
 
 Configuration (first match wins):
-  1. HYPERNYM_API_KEY (+ optional HYPERNYM_API_URL, default https://zephyr.hypernym.ai)
+  1. HYPERNYM_API_KEY (+ optional HYPERNYM_API_URL, default https://zephyr-b-gpu.hypernym.ai)
   2. ~/.hypernym/config.json (mode 600): {"servers": [{"name": "...", "url": "...", "api_key": "..."}]}
 Packages: ~/.hypernym/packages/<owner>__<repo>/<completed UTC>_<commit12>_<job_id>/
 NO .get().
@@ -30,14 +30,20 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from pathlib import Path
+
+import nebula_statusline
 
 HOME = Path.home() / '.hypernym'
 CONFIG = HOME / 'config.json'
 PACKAGES = HOME / 'packages'
 SUBMISSIONS = HOME / 'submissions'
-DEFAULT_URL = 'https://zephyr.hypernym.ai'
+DEFAULT_URL = 'https://zephyr-b-gpu.hypernym.ai'
 PAGE = 100
+# GitHub login goes through the ClaudeStorm app, which finds or creates the Zephyr user for a GitHub account.
+LOGIN_APP = {'app_id': 'claudestorm',
+             'app_secret_hash': '0cabf53047051a5636da91c1be7dcd123d72dafa08f0600e02aeeca8dfbc462f'}
 POLL_S = 30
 
 
@@ -279,10 +285,14 @@ def cmd_help(args, servers):
             jobs = repo_jobs(server, info['key_lower'])
         except urllib.error.HTTPError as e:
             print(f"  {http_error_text(e)}")
+            if e.code == 401:
+                print("  your login is not valid (expired or revoked) — run: login")
             continue
         except (urllib.error.URLError, OSError) as e:
             print(f"  unreachable: {e}")
             continue
+        if 'expires_at' in server and server['expires_at'] - time.time() < 3 * 86400:
+            print(f"  login expires {time.strftime('%Y-%m-%d', time.localtime(server['expires_at']))} — run: login")
         done = sum(1 for s, _, _ in fl.values() if s == 'COMPLETED')
         print(f"  floats for this repo (direct submissions): {len(fl)} ({done} completed)")
         for j in jobs:
@@ -297,6 +307,7 @@ def cmd_help(args, servers):
         print("  none — run: hypernym.py analyze --question \"...\"")
     for p in pkgs:
         print('\n'.join(describe(info, p)))
+    print(f"\n{nebula_statusline.peers('hypernym')}")
     print("\ncommands: floats [--files] | analyze --question TEXT [--top-n N] [--budget B] | wait JOB | sync | packages | load")
 
 
@@ -389,6 +400,135 @@ def cmd_wait(args, servers):
             print(f"still running after {args.minutes} min; run wait again later")
             return
         time.sleep(POLL_S)
+
+
+def load_app_credentials() -> dict:
+    """App used for GitHub login: HYPERNYM_APP_ID + HYPERNYM_APP_SECRET_HASH, "app" in the config, or LOGIN_APP."""
+    if 'HYPERNYM_APP_ID' in os.environ and 'HYPERNYM_APP_SECRET_HASH' in os.environ:
+        return {'app_id': os.environ['HYPERNYM_APP_ID'], 'app_secret_hash': os.environ['HYPERNYM_APP_SECRET_HASH']}
+    if CONFIG.exists():
+        config = json.loads(CONFIG.read_text())
+        if 'app' in config:
+            return config['app']
+    return LOGIN_APP
+
+
+def app_call(url: str, app: dict, path: str, body: dict = None) -> dict:
+    headers = {'X-App-Id': app['app_id'], 'X-App-Secret-Hash': app['app_secret_hash']}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers['Content-Type'] = 'application/json'
+    req = urllib.request.Request(f"{url}{path}", data=data, headers=headers)
+    return json.load(urllib.request.urlopen(req, timeout=30))
+
+
+def browser_login(url: str, minutes: float) -> dict:
+    """GitHub login in the browser (the same flow as ClaudeStorm's login_with_github). Returns the active status."""
+    app = load_app_credentials()
+    try:
+        init = app_call(url, app, "/api/github/login/init", {})
+    except urllib.error.HTTPError as e:
+        sys.exit(f"could not start login on {url}: {http_error_text(e)}")
+    print("Opening your browser to sign in with GitHub. If it does not open, visit:")
+    print(f"  {init['auth_url']}")
+    webbrowser.open(init['auth_url'])
+    deadline = min(time.time() + minutes * 60, init['expires_at'])
+    while time.time() < deadline:
+        time.sleep(2)
+        try:
+            s = app_call(url, app, f"/api/github/login/status/{init['id']}")
+        except (urllib.error.URLError, OSError) as e:
+            print(f"  (status check failed: {e}; retrying)")
+            continue
+        if s['status'] == 'active':
+            return s
+        if s['status'] != 'pending':
+            sys.exit(f"login ended as {s['status']}: {s['error_message']}")
+    sys.exit("login was not approved in time; run login again")
+
+
+def save_server(server: dict) -> None:
+    config = {'servers': []}
+    if CONFIG.exists():
+        config = json.loads(CONFIG.read_text())
+    config['servers'] = [s for s in config['servers'] if s['name'] != server['name']] + [server]
+    HOME.mkdir(parents=True, exist_ok=True)
+    old_umask = os.umask(0o077)
+    try:
+        CONFIG.write_text(json.dumps(config, indent=1))
+    finally:
+        os.umask(old_umask)
+    os.chmod(CONFIG, 0o600)
+
+
+def cmd_login(args, servers):
+    """Log in: browser (GitHub) by default, or --key KEY / --key - for a key you were given. Saves to config (600)."""
+    url = args.url.rstrip('/')
+    server = {'name': args.name, 'url': url, 'api_key': ''}
+    who = ''
+    if args.key:
+        key = args.key
+        if key == '-':
+            key = sys.stdin.readline().strip()
+        if not key:
+            sys.exit("empty key")
+        server['api_key'] = key
+    else:
+        s = browser_login(url, args.minutes)
+        server['api_key'] = s['session_token']
+        server['expires_at'] = time.time() + 30 * 86400
+        who = f"GitHub @{s['github_username']} ({s['github_email']}), "
+    try:
+        q = call(server, "/api/me/quota")
+    except urllib.error.HTTPError as e:
+        sys.exit(f"key rejected by {url}: {http_error_text(e)}")
+    except (urllib.error.URLError, OSError) as e:
+        sys.exit(f"{url} unreachable: {e}")
+    save_server(server)
+    print(f"logged in to {args.name} ({url}): {who}tier {q['tier']}, "
+          f"max concurrent floats {q['my_max_concurrent']}. Saved to {CONFIG} (mode 600).")
+    if 'expires_at' in server:
+        print(f"This login lasts 30 days (until {time.strftime('%Y-%m-%d', time.localtime(server['expires_at']))}).")
+    if 'HYPERNYM_API_KEY' in os.environ:
+        print("note: HYPERNYM_API_KEY is set in this environment and takes precedence over the config file.")
+
+
+def cmd_github(args, servers):
+    """GitHub access for private repos: `github status` lists links; `github link` starts OAuth for this repo."""
+    server = pick_server(servers, args.server)
+    if args.action == 'status':
+        links = call(server, "/api/github/links")['links']
+        active = [l for l in links if l['status'] == 'active']
+        if not active:
+            print(f"no active GitHub link on {server['name']}; private repos cannot be analyzed yet. Run: github link")
+        for l in active:
+            print(f"  active: GitHub user {l['github_username']} (link {l['id']}, linked for {l['repo_url']})")
+        return
+    info = repo_info(args.dir)
+    try:
+        r = call(server, "/api/github/init-link", {'repo_url': info['url']})
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors='replace')
+        if e.code == 409 and 'already_linked' in body:
+            d = json.loads(body)
+            print(f"already linked: GitHub user {d['github_username']} (link {d['link_id']}, {d['status']})")
+            return
+        sys.exit(f"github link failed: HTTP {e.code}: {body[:300]}")
+    print("Open this URL in a browser and approve access:")
+    print(f"  {r['auth_url']}")
+    print("The approval redirects to the server's GitHub callback; if that callback is not reachable from your "
+          "browser, the link cannot complete (see README).")
+    deadline = time.time() + args.minutes * 60
+    while time.time() < deadline:
+        time.sleep(5)
+        s = call(server, f"/api/github/status/{r['id']}")
+        if s['status'] == 'active':
+            print(f"linked: GitHub user {s['github_username']}. Private repos that account can read can now be analyzed.")
+            return
+        if s['status'] not in ('pending',):
+            sys.exit(f"link ended as {s['status']}: {s['error_message']}")
+    print(f"still pending after {args.minutes} min; run `github status` later")
 
 
 def cmd_cancel(args, servers):
@@ -498,6 +638,14 @@ def main() -> None:
     p.add_argument('--minutes', type=float, default=10)
     p = sub.add_parser('cancel')
     p.add_argument('job_id')
+    p = sub.add_parser('login')
+    p.add_argument('--key', default='')
+    p.add_argument('--url', default=DEFAULT_URL)
+    p.add_argument('--name', default='zephyr')
+    p.add_argument('--minutes', type=float, default=10)
+    p = sub.add_parser('github')
+    p.add_argument('action', choices=['status', 'link'])
+    p.add_argument('--minutes', type=float, default=5)
     sub.add_parser('sync')
     sub.add_parser('packages')
     sub.add_parser('statuscache')
@@ -506,13 +654,13 @@ def main() -> None:
     args = ap.parse_args()
 
     servers = load_servers()
-    if not servers:
-        print("No Hypernym API key configured. Set HYPERNYM_API_KEY (and HYPERNYM_API_URL if not "
-              f"{DEFAULT_URL}), or create {CONFIG} (mode 600) with a \"servers\" list. See SKILL.md.")
+    if not servers and args.cmd != 'login':
+        print("No Hypernym API key configured. Run: hypernym.py login --key YOUR_KEY [--url SERVER_URL], "
+              f"or set HYPERNYM_API_KEY (and HYPERNYM_API_URL if not {DEFAULT_URL}). See SKILL.md.")
         sys.exit(2)
     commands = {'help': cmd_help, 'floats': cmd_floats, 'analyze': cmd_analyze, 'wait': cmd_wait,
                 'sync': cmd_sync, 'packages': cmd_packages, 'load': cmd_load, 'statuscache': cmd_statuscache,
-                'cancel': cmd_cancel}
+                'cancel': cmd_cancel, 'login': cmd_login, 'github': cmd_github}
     commands[args.cmd](args, servers)
 
 

@@ -1,0 +1,9 @@
+{
+  "description": "hypernym: record the plugin location and keep the ~/.hypernym/bin/statusline launcher current.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "timeout": 10,
+                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_start.py\"" } ] }
+    ]
+  }
+}

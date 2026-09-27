@@ -1,9 +1,19 @@
 {
-  "name": "hypernym",
-  "description": "Hypernym plugins for Claude Code",
-  "owner": { "name": "Hypernym" },
+  "name": "hypernym-nebula",
+  "description": "Hypernym Nebula for Claude Code: nebulashield (local, offline shield) and hypernym (Zephyr connector). Install either or both; together they share one status line.",
+  "owner": {
+    "name": "Hypernym"
+  },
   "plugins": [
-    { "name": "hypernym", "source": "./plugins/hypernym",
-      "description": "Repo analyze for the current repo: floats, jobs, packages with drift." }
+    {
+      "name": "nebulashield",
+      "source": "./plugins/nebulashield",
+      "description": "Local, offline shield: flags fabricated confession, decision handback, claim beyond evidence and forced repetition in Claude's replies. No network, no telemetry, no training on your data."
+    },
+    {
+      "name": "hypernym",
+      "source": "./plugins/hypernym",
+      "description": "Zephyr connector: repo analyze for the current repo — floats, jobs, packages with drift."
+    }
   ]
 }

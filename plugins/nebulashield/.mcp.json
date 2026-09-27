@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "nebulashield": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/nebulashield-run", "args": ["mcp_server.py"] }
+  }
+}

@@ -1,6 +1,6 @@
 ---
 name: hypernym
-description: Hypernym repo analysis for the git repo you are working in — check floats and repo-analyze jobs, submit a repo analyze, download the finished package, report how far it has drifted from the current code, and load it into the session. Use when the user says "hypernym help", asks about floats, float status, repo analyze, a Hypernym package or treatment prompt, or wants Hypernym context for this repo loaded.
+description: Hypernym repo analysis for the git repo you are working in — check floats and repo-analyze jobs, submit a repo analyze, download the finished package, report how far it has drifted from the current code, and load it into the session. Use when the user says "hypernym help" or "hypernym login" (sign in to Hypernym/Zephyr — use this skill's login, never a hand-written curl), asks about floats, float status, repo analyze, a Hypernym package or treatment prompt, or wants Hypernym context for this repo loaded.
 ---
 
 # Hypernym
@@ -65,13 +65,34 @@ machine can read them.
 - `load` prints the newest package (or `--package DIR`) for you to read into the session. Mention the
   drift when you load it: files that changed since the package describe older code.
 
-## Setup
+## Setup — login and GitHub
 
-If the script reports no API key, tell the user to set `HYPERNYM_API_KEY` (and `HYPERNYM_API_URL` if
-not `https://zephyr.hypernym.ai`), or create `~/.hypernym/config.json`, mode 600:
+"hypernym login" signs in through the browser, like `claude login`: it opens GitHub, the user approves,
+and the session (30 days) is saved to `~/.hypernym/config.json`, mode 600. Run it in the background or with
+a long timeout, tell the user to approve in the browser that opened (print the URL too), and wait:
 
-```json
-{"servers": [{"name": "zephyr", "url": "https://zephyr.hypernym.ai", "api_key": "YOUR_KEY"}]}
+```bash
+python3 <skill dir>/scripts/hypernym.py login
 ```
 
-Never write an API key into this skill's folder or the repo.
+It works on any machine with no setup: the same GitHub account always gets the same Hypernym account
+(created on first login). If the user was given a key instead, log in with the key:
+
+```bash
+python3 <skill dir>/scripts/hypernym.py login --key -        # then paste the key
+```
+
+`--url` defaults to `https://zephyr-b-gpu.hypernym.ai`; `--name` defaults to `zephyr`. Logging in again
+with the same name replaces that server's login. `HYPERNYM_API_KEY` / `HYPERNYM_API_URL`, if set, take
+precedence over the config file. Never write a key into this skill's folder or the repo.
+
+Private repos need the rider's GitHub account linked to their Hypernym account:
+
+```bash
+python3 <skill dir>/scripts/hypernym.py --dir "$PWD" github status   # lists active links
+python3 <skill dir>/scripts/hypernym.py --dir "$PWD" github link     # prints a GitHub approval URL, waits
+```
+
+Give the user the approval URL from `github link`; they open it in a browser. The server keeps the
+GitHub token encrypted and uses it only to clone that user's private repos; private checkouts are
+deleted when each job ends.
