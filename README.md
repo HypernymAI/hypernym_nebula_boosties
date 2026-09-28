@@ -3,28 +3,28 @@
 **For agents — install in one step.** The repo `HypernymAI/hypernym-nebula` is private: the machine needs GitHub access
 to it (`gh auth status` shows an account in the HypernymAI org; if `git ls-remote https://github.com/HypernymAI/hypernym-nebula`
 fails, run `gh auth setup-git` once). On macOS with Apple Silicon, run
-`command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebulashield@hypernym-nebula && claude plugin install hypernym@hypernym-nebula`
+`command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula`
 (leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then start a new
-Claude Code session: **nebulashield** (offline shield: no account, sends nothing) sets itself up in seconds, and the
+Claude Code session: **nebula** (offline shield: no account, sends nothing) sets itself up in seconds, and the
 shared status line (Hypernym logo, the shield's judgement row, the Zephyr line) turns on by itself unless a custom
-`statusLine` is already set (`/nebulashield:statusline force` replaces it, backed up first). For Zephyr, say
-**"hypernym login"** in the session. Check with `claude plugin list` and `/nebulashield:shield-status`; update with
-`claude plugin marketplace update hypernym-nebula && claude plugin update nebulashield@hypernym-nebula && claude plugin update hypernym@hypernym-nebula`.
+`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr, say
+**"hypernym login"** in the session. Check with `claude plugin list` and `/nebula:shield-status`; update with
+`claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && claude plugin update hypernym@hypernym-nebula`.
 
 This marketplace holds two separate plugins. Install either one or both.
 
 | plugin | what it does | network |
 |---|---|---|
 | **hypernym** (Zephyr connector) | Repo analyze for the git repo you're in. It checks your floats and jobs, submits an analysis, downloads the finished package, shows how far it has drifted from your current code, and loads it into the session. | Talks **only** to the Hypernym server you log in to, using **your** key. |
-| **nebulashield** | Local shield that flags fabricated confession, decision handback, claim beyond evidence, and forced repetition in Claude's replies. | **None.** It sends nothing and trains on nothing. See [`plugins/nebulashield/PRIVACY.md`](plugins/nebulashield/PRIVACY.md). |
+| **nebula** | Local shield that flags fabricated confession, decision handback, claim beyond evidence, and forced repetition in Claude's replies. | **None.** It sends nothing and trains on nothing. See [`plugins/nebula/PRIVACY.md`](plugins/nebula/PRIVACY.md). |
 
-The two plugins never import each other. nebulashield's no-network guarantee depends on that.
+The two plugins never import each other. nebula's no-network guarantee depends on that.
 
 ## Requirements
 
-- **uv** (https://docs.astral.sh/uv/). nebulashield builds its own Python environment with it on first run.
+- **uv** (https://docs.astral.sh/uv/). nebula builds its own Python environment with it on first run.
 - **python3**, available as `python3`. The hypernym plugin uses only the standard library.
-- **nebulashield** runs on macOS with Apple Silicon only, because it ships a prebuilt native scorer.
+- **nebula** runs on macOS with Apple Silicon only, because it ships a prebuilt native scorer.
 - **hypernym** needs a Hypernym API key. Keys are issued per person; ask Hypernym for one.
 
 ## Install — Claude Code
@@ -33,9 +33,9 @@ Paste ONE of these into a terminal (macOS). Each line is complete: it installs `
 marketplace, and installs the plugin(s). Then start Claude Code — the first session finishes setup and turns on the
 status line.
 
-**nebulashield only** (local, offline shield)
+**nebula only** (local, offline shield)
 ```
-command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebulashield@hypernym-nebula
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula
 ```
 
 **hypernym only** (Zephyr connector)
@@ -45,21 +45,21 @@ claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin instal
 
 **Both** (recommended — they share one status line)
 ```
-command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebulashield@hypernym-nebula && claude plugin install hypernym@hypernym-nebula
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula
 ```
 
 Already inside Claude Code? The same thing as slash commands:
 ```
 /plugin marketplace add HypernymAI/hypernym-nebula
-/plugin install nebulashield@hypernym-nebula
+/plugin install nebula@hypernym-nebula
 /plugin install hypernym@hypernym-nebula
 ```
 then start a new session. Add the other plugin any time: hypernym joins the status line within a second;
-nebulashield shows "finishing setup" until your next session start builds its local Python environment (once).
+nebula shows "finishing setup" until your next session start builds its local Python environment (once).
 
 ## Install — Codex
 
-Only **hypernym** is listed for Codex. nebulashield reads Claude Code transcripts and has no Codex adapter yet.
+Only **hypernym** is listed for Codex. nebula reads Claude Code transcripts and has no Codex adapter yet.
 Add this repo as a plugin marketplace in Codex, then install `hypernym`.
 <!-- release owner: confirm the exact Codex commands during the clean-install check -->
 
@@ -85,7 +85,7 @@ them.
 
 ## Status line (Claude Code)
 
-Both plugins share one status line: nebulashield's badge rows with the Zephyr line appended, or whichever one
+Both plugins share one status line: nebula's badge rows with the Zephyr line appended, or whichever one
 you have installed. It turns itself on at session start only if you have no status line (or an older one of
 ours); it never replaces someone else's, and never comes back after you remove it.
 
@@ -109,11 +109,11 @@ It sends **no source code**. The server clones the repo from GitHub itself. Priv
 GitHub access you linked: the server stores that token encrypted, and each job's private checkout is deleted
 when the job ends. Drift is computed locally by hashing your working tree, and those hashes are never uploaded.
 
-**nebulashield** sends nothing. The only download is `uv` fetching its pinned Python packages from PyPI on first
-run. Details and tests are in [`plugins/nebulashield/PRIVACY.md`](plugins/nebulashield/PRIVACY.md).
+**nebula** sends nothing. The only download is `uv` fetching its pinned Python packages from PyPI on first
+run. Details and tests are in [`plugins/nebula/PRIVACY.md`](plugins/nebula/PRIVACY.md).
 
 ## Files on your machine
 
 - `~/.hypernym/` holds `config.json` (your login, mode 600), `packages/`, and the status cache.
 - `~/.hypernym-nebula/` holds the shared status-line launcher.
-- `~/.nebulashield/` holds nebulashield's settings and local database. See PRIVACY.md.
+- `~/.nebula/` holds nebula's settings and local database. See PRIVACY.md.

@@ -1,5 +1,5 @@
 ---
-description: Install the shared hypernym-nebula status line (nebulashield + Zephyr), "remove" it, or "force" it over an unrecognized one. Backs up settings.json first.
+description: Install the shared hypernym-nebula status line (nebula + Zephyr), "remove" it, or "force" it over an unrecognized one. Backs up settings.json first.
 argument-hint: [remove | force]
 allowed-tools: Bash(*)
 ---

@@ -1,7 +1,7 @@
 # Hypernym Nebula — release ownership and checklist
 
 One marketplace (`hypernym-nebula`), ONE package, two plugins that know about each other:
-**nebulashield** (local, offline shield) and **hypernym** (Zephyr connector). Either installs alone; together they share
+**nebula** (local, offline shield) and **hypernym** (Zephyr connector). Either installs alone; together they share
 one status line. Nothing here is published until every box below is checked and the owner has signed off on the gates.
 
 ## Who owns what
@@ -9,15 +9,15 @@ one status line. Nothing here is published until every box below is checked and 
 | area | owner | files |
 |---|---|---|
 | **Final packaging / release** (marketplace listing, versions, install boxes, this checklist, go/no-go) | the **shield session** (release owner, per the owner's instruction) | `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`, `RELEASE.md`, `.gitignore`, README install section |
-| `plugins/nebulashield/` — the offline shield | shield session | written ONLY by `ctxshield-plugin/tools/sync_to_marketplace.py` from the dev repo `ctxshield-plugin/plugin/` — never edited here |
-| **Shared status line** `nebula_statusline.py` (byte-identical in both plugins) | shield session = source of truth (`ctxshield-plugin/plugin/shield/`) | the sync writes BOTH copies (`plugins/nebulashield/shield/`, `plugins/hypernym/skills/hypernym/scripts/`) and verifies identity; never edit a copy here |
+| `plugins/nebula/` — the offline shield | shield session | written ONLY by `ctxshield-plugin/tools/sync_to_marketplace.py` from the dev repo `ctxshield-plugin/plugin/` — never edited here |
+| **Shared status line** `nebula_statusline.py` (byte-identical in both plugins) | shield session = source of truth (`ctxshield-plugin/plugin/shield/`) | the sync writes BOTH copies (`plugins/nebula/shield/`, `plugins/hypernym/skills/hypernym/scripts/`) and verifies identity; never edit a copy here |
 | `plugins/hypernym/` — the Zephyr connector (everything except the shared file) | the **Zephyr session** | `plugins/hypernym/` |
 | Marketplace README (first run, what is sent where) | Zephyr session drafts; release owner signs off | `README.md` |
 | GitHub publishing mechanics (remote, push, tags) | Zephyr session, **after** release sign-off | — |
 | Zephyr server | Zephyr session | `portable_hypernym_processor` |
 | **Gates** | **the owner** | see "Gates" below |
 
-Rules: the two plugins never IMPORT each other (nebulashield's no-network guarantee depends on it); they know each other
+Rules: the two plugins never IMPORT each other (nebula's no-network guarantee depends on it); they know each other
 through Claude Code's plugin registry and the shared status line. Each session edits only its own files; changes to the
 other's files go through a message.
 
@@ -26,9 +26,9 @@ other's files go through a message.
   uninstalling leaves files on disk (measured).
 - Either plugin's SessionStart refreshes `~/.hypernym-nebula/bin/{statusline,nebula_statusline.py}` and sets `statusLine`
   only when there is none or it is one of ours (backup first; never a foreign one; never after `remove`).
-- Every refresh: nebulashield's 3 rows, hypernym's Zephyr line appended to the last row — or whichever one is installed.
+- Every refresh: nebula's 3 rows, hypernym's Zephyr line appended to the last row — or whichever one is installed.
   A failing part says so (`✖ <plugin>: …`); a freshly (re)installed shield says "finishing setup at session start".
-- Each plugin's status (`/nebulashield:shield-status`, `hypernym help`) says whether the other is installed + how.
+- Each plugin's status (`/nebula:shield-status`, `hypernym help`) says whether the other is installed + how.
 
 ## Release checklist
 
@@ -38,7 +38,9 @@ Build
 - [x] `plugins/nebulashield/` synced — refuses ungated/private/personal content; 154 files, 19.2 MB; old `plugins/ctxshield/` removed
 - [x] `claude plugin validate .` + both plugins `--strict` pass
 - [x] shared status line byte-identical in both plugins (written + verified by the sync)
-- [x] nebulashield NOT in the Codex marketplace (needs a Codex transcript adapter + parity test first)
+- [x] plugin `nebulashield` → `nebula` 0.4.0 (pilot, 2026-09-28): commands `/nebula:*`, data `~/.nebula`, DB `nebula.db`,
+      `bin/nebula-run`; old `plugins/nebulashield/` removed by the sync; hypernym 0.5.3 (shared status line VERSION 4)
+- [x] nebula NOT in the Codex marketplace (needs a Codex transcript adapter + parity test first)
 - [x] `.gitignore`: `.venv/`, `__pycache__/`, `*.pyc`
 - [x] README install section = the website's three copy-paste boxes (shield / hypernym / both) + slash-command form
 - [ ] README placeholder: exact Codex install commands
@@ -77,6 +79,6 @@ Switch this Mac (owner's go; after the gates)
       `hypernym-nebula`; install both; new session → the shared status line replaces the hand-made one-liner.
 
 Known, accepted
-- `plugins/nebulashield/shield/vendor_strata.py` keeps ClaudeStorm's class-10 regex byte-exact (parity proof).
-- nebulashield: macOS / Apple Silicon only (prebuilt native scorer); background auto-detect = Apple Terminal.
-- The internal scoring library inside nebulashield is still the python package `ctxshield` (not user-visible).
+- `plugins/nebula/shield/vendor_strata.py` keeps ClaudeStorm's class-10 regex byte-exact (parity proof).
+- nebula: macOS / Apple Silicon only (prebuilt native scorer); background auto-detect = Apple Terminal.
+- The internal scoring library inside nebula is still the python package `ctxshield` (not user-visible).

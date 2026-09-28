@@ -2,7 +2,7 @@
 """
 hypernym-nebula SHARED status line — byte-identical in BOTH plugins of the hypernym-nebula marketplace, together with
 the Hypernym logo code it draws (SHARED below: brand.py, termbg.py, brand_assets/wings_candidates.json):
-  nebulashield  plugin/shield/
+  nebula  plugin/shield/
   hypernym      skills/hypernym/scripts/
 Standard library only. No network. It never imports either plugin; it only RUNS their status-line programs.
 
@@ -19,9 +19,9 @@ uninstalling a plugin leaves its files on disk (measured, build doc S35-pre). So
 plugin, in any order, shows up within one refresh.
 
 Rows (S39): whenever EITHER plugin is installed, the Hypernym braille logo (3 rows, gentle shine, alpha against the
-terminal's real background) is drawn at the left; the MIDDLE row carries nebulashield's judgement row (if installed)
-and the wings + HYPERNYM.ai wordmark; hypernym's Zephyr line rides the LAST row. Brand settings come from nebulashield's
-settings when present (~/.nebulashield/config.json → brand), else BRAND_DEFAULTS (= nebulashield's shipped defaults).
+terminal's real background) is drawn at the left; the MIDDLE row carries nebula's judgement row (if installed)
+and the wings + HYPERNYM.ai wordmark; hypernym's Zephyr line rides the LAST row. Brand settings come from nebula's
+settings when present (~/.nebula/config.json → brand), else BRAND_DEFAULTS (= nebula's shipped defaults).
 A part that fails shows "✖ <plugin>: <reason>" — never a blank line.
 NO .get(). Imports at top.
 """
@@ -38,10 +38,10 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 3                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 4                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'
-ORDER = ('nebulashield', 'hypernym')          # row order: shield rows, then the Zephyr line
-NICE = {'nebulashield': 'nebulashield (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}
+ORDER = ('nebula', 'hypernym')          # row order: shield rows, then the Zephyr line
+NICE = {'nebula': 'nebula (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}
 HOME_DIR = Path.home() / '.hypernym-nebula'
 BIN = HOME_DIR / 'bin'
 COPY = BIN / 'nebula_statusline.py'
@@ -51,7 +51,7 @@ TIMEOUT_S = 4.0
 SHARED = ('nebula_statusline.py', 'brand.py', 'termbg.py', 'brand_assets/wings_candidates.json')
 BRAND_DEFAULTS = {'enabled': True, 'bg': 'auto', 'icons': True, 'mark': 'mid', 'mode': 'gentle', 'rest_alpha': 0.1,
                   'wings': 76}
-SHIELD_CONFIG = Path.home() / '.nebulashield' / 'config.json'
+SHIELD_CONFIG = Path.home() / '.nebula' / 'config.json'
 RECOGNIZED = ('.hypernym-nebula/bin/statusline',  # ours
               '.hypernym/bin/statusline', 'compose_statusline.py',    # hypernym ≤ 0.4 composer
               'ctxshield-badge', 'shield_badge.py')                   # ctxshield ≤ 0.2 badge / hand-made one-liner
@@ -103,13 +103,13 @@ def installed(name: str, project_dir: str):
 
 
 def shield_ready(root: Path) -> bool:
-    """nebulashield's SessionStart marks its own install directory once its Python environment is built."""
+    """nebula's SessionStart marks its own install directory once its Python environment is built."""
     return (root / '.venv' / '.nebula_ready').exists()
 
 
 def part_argv(name: str, root: Path) -> list:
-    if name == 'nebulashield':
-        return [str(root / 'bin' / 'nebulashield-run'), 'shield_badge.py', '--row']
+    if name == 'nebula':
+        return [str(root / 'bin' / 'nebula-run'), 'shield_badge.py', '--row']
     return [sys.executable, str(root / 'skills' / 'hypernym' / 'scripts' / 'statusline.py')]
 
 
@@ -144,15 +144,15 @@ def compose(event: str) -> list:
                 f"python3 {COPY} remove\x1b[0m"]
     out, procs = {}, {}
     for name, root in active:
-        if name == 'nebulashield' and not shield_ready(root):
-            chk = subprocess.run([str(root / 'bin' / 'nebulashield-run'), '--check'], capture_output=True, text=True,
+        if name == 'nebula' and not shield_ready(root):
+            chk = subprocess.run([str(root / 'bin' / 'nebula-run'), '--check'], capture_output=True, text=True,
                                  timeout=TIMEOUT_S)
-            out[name] = (["\x1b[2m⋯ nebulashield: finishing setup at session start (builds its local Python environment once)\x1b[0m"]
+            out[name] = (["\x1b[2m⋯ nebula: finishing setup at session start (builds its local Python environment once)\x1b[0m"]
                          if chk.returncode == 0 else [f"✖ {last_words(chk.stderr)}"])
             continue
         argv = part_argv(name, root)
-        if not Path(argv[0] if name == 'nebulashield' else argv[1]).exists():
-            out[name] = [f"✖ {name}: {argv[0] if name == 'nebulashield' else argv[1]} is missing — reinstall the plugin"]
+        if not Path(argv[0] if name == 'nebula' else argv[1]).exists():
+            out[name] = [f"✖ {name}: {argv[0] if name == 'nebula' else argv[1]} is missing — reinstall the plugin"]
             continue
         p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(root)), start_new_session=True)
@@ -172,7 +172,7 @@ def compose(event: str) -> list:
         except subprocess.TimeoutExpired:
             os.killpg(p.pid, signal.SIGTERM)       # the whole part (uv → python), so a hang never piles up
             out[name] = [f"✖ {name}: no answer within {TIMEOUT_S:.0f} s"]
-    return layout(out['nebulashield'] if 'nebulashield' in out else [],
+    return layout(out['nebula'] if 'nebula' in out else [],
                   '  '.join(out['hypernym']) if 'hypernym' in out else '', time.time())
 
 
@@ -234,7 +234,7 @@ def refresh() -> None:
                 shutil.copyfile(src, tmp)
                 tmp.replace(dst)
     text = ("#!/bin/sh\n"
-            "# hypernym-nebula status line — written by the nebulashield / hypernym plugins on session start.\n"
+            "# hypernym-nebula status line — written by the nebula / hypernym plugins on session start.\n"
             "# Shows whichever of the two is installed (read from Claude Code's plugin registry every refresh).\n"
             f'exec python3 "{COPY}" compose\n')
     if not LAUNCHER.exists() or LAUNCHER.read_text() != text:
