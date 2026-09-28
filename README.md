@@ -9,8 +9,8 @@ Claude Code session: **nebula** (offline shield: no account, sends nothing) sets
 shared status line (Hypernym logo, the shield's judgement row, the Zephyr line) turns on by itself unless a custom
 `statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr (sign-in is invite-only, through GitHub): the first time ever, say **"hypernym login"**
 — it creates your identity and shows 12 words to write down; on a machine joining an identity that already exists,
-say **"hypernym login with my 12 words"** and give them. If you hold more than one account on the Zephyr, say
-**"hypernym account use EMAIL"** once. Check with `claude plugin list` and `/nebula:shield-status`; update with
+say **"hypernym login with my 12 words"** and give them.
+Check with `claude plugin list` and `/nebula:shield-status`; update with
 `claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && claude plugin update hypernym@hypernym-nebula`.
 
 This marketplace holds two separate plugins. Install either one or both.
@@ -70,7 +70,8 @@ Add this repo as a plugin marketplace in Codex, then install `hypernym`.
 In any git repo, tell Claude:
 
 1. **"hypernym login"** opens GitHub in your browser (like `claude login`). Sign-in is invite-only: the Zephyr
-   checks your GitHub account is on its invite list, and if it isn't, nothing is created. The plugin holds no
+   checks your GitHub account is on its invite list, and if it isn't, nothing is created; if it is, you land on the
+   account Hypernym set up for you. The plugin holds no
    secret of Hypernym's. The first time, it makes your identity: 12 Banksian words (your principal, the same
    identity on every Zephyr, write them down) and a key for this install (the device key), both kept in
    `~/.hypernym/identity/`, readable only by you. From then on every request is signed with the device key, and
@@ -83,11 +84,9 @@ In any git repo, tell Claude:
    before costs a float.
 4. **Private repos**: say "hypernym github link" and approve access in the browser. Check with "hypernym github
    status".
-5. **More than one account on the Zephyr** (e.g. two emails): one identity can hold them all. "hypernym account
-   list" shows them; "hypernym account use EMAIL" picks this machine's default.
 
 **MCP.** The hypernym plugin also registers an MCP server named `hypernym` (standard-library Python over stdio). Its
-tools (help, floats, analyze, wait, cancel, sync, packages, load, github status, login start/status) run the same
+tools (help, floats, analyze, wait, cancel, sync, packages, load, github status, account list/use, login start/status) run the same
 commands as the skill, so analyze is still a dry run until you approve. For Codex or any other MCP host, point it
 at the same program: command `python3`, argument `<plugin dir>/skills/hypernym/scripts/hypernym_mcp_server.py`.
 
