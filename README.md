@@ -7,15 +7,17 @@ fails, run `gh auth setup-git` once). On macOS with Apple Silicon, run
 (leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then start a new
 Claude Code session: **nebula** (offline shield: no account, sends nothing) sets itself up in seconds, and the
 shared status line (Hypernym logo, the shield's judgement row, the Zephyr line) turns on by itself unless a custom
-`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr, say
-**"hypernym login"** in the session. Check with `claude plugin list` and `/nebula:shield-status`; update with
+`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr (sign-in is invite-only, through GitHub): the first time ever, say **"hypernym login"**
+— it creates your identity and shows 12 words to write down; on a machine joining an identity that already exists,
+say **"hypernym login with my 12 words"** and give them. If you hold more than one account on the Zephyr, say
+**"hypernym account use EMAIL"** once. Check with `claude plugin list` and `/nebula:shield-status`; update with
 `claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && claude plugin update hypernym@hypernym-nebula`.
 
 This marketplace holds two separate plugins. Install either one or both.
 
 | plugin | what it does | network |
 |---|---|---|
-| **hypernym** (Zephyr connector) | Repo analyze for the git repo you're in. It checks your floats and jobs, submits an analysis, downloads the finished package, shows how far it has drifted from your current code, and loads it into the session. | Talks **only** to the Hypernym server you log in to, using **your** key. |
+| **hypernym** (Zephyr connector) | Repo analyze for the git repo you're in. It checks your floats and jobs, submits an analysis, downloads the finished package, shows how far it has drifted from your current code, and loads it into the session. | Talks **only** to the Hypernym server you sign in to; every request is signed by this install's device key. |
 | **nebula** | Local shield that flags fabricated confession, decision handback, claim beyond evidence, and forced repetition in Claude's replies. | **None.** It sends nothing and trains on nothing. See [`plugins/nebula/PRIVACY.md`](plugins/nebula/PRIVACY.md). |
 
 The two plugins never import each other. nebula's no-network guarantee depends on that.
@@ -25,7 +27,7 @@ The two plugins never import each other. nebula's no-network guarantee depends o
 - **uv** (https://docs.astral.sh/uv/). nebula builds its own Python environment with it on first run.
 - **python3**, available as `python3`. The hypernym plugin uses only the standard library.
 - **nebula** runs on macOS with Apple Silicon only, because it ships a prebuilt native scorer.
-- **hypernym** needs a Hypernym API key. Keys are issued per person; ask Hypernym for one.
+- **hypernym** needs a GitHub account invited by Hypernym (sign-in is invite-only).
 
 ## Install — Claude Code
 
@@ -67,10 +69,13 @@ Add this repo as a plugin marketplace in Codex, then install `hypernym`.
 
 In any git repo, tell Claude:
 
-1. **"hypernym login"** opens GitHub in your browser. Approve, and you're signed in for 30 days (like
-   `claude login`); the session is saved to `~/.hypernym/config.json` (readable only by you). Your first login
-   creates your Hypernym account; later logins on any computer find the same one. Given a key instead? Use
-   `hypernym login --key -`.
+1. **"hypernym login"** opens GitHub in your browser (like `claude login`). Sign-in is invite-only: the Zephyr
+   checks your GitHub account is on its invite list, and if it isn't, nothing is created. The plugin holds no
+   secret of Hypernym's. The first time, it makes your identity: 12 Banksian words (your principal, the same
+   identity on every Zephyr, write them down) and a key for this install (the device key), both kept in
+   `~/.hypernym/identity/`, readable only by you. From then on every request is signed with the device key, and
+   no token is stored. On another computer, bring the same identity with `hypernym login --words "…"`. Given a
+   key instead? Use `hypernym login --key -`.
 2. **"hypernym help"** shows your account, this repo's floats and repo-analyze jobs, and any packages on disk with
    their drift.
 3. **Analyze**: describe the bug or area you want covered. Claude does a dry run first and shows exactly what
@@ -78,6 +83,13 @@ In any git repo, tell Claude:
    before costs a float.
 4. **Private repos**: say "hypernym github link" and approve access in the browser. Check with "hypernym github
    status".
+5. **More than one account on the Zephyr** (e.g. two emails): one identity can hold them all. "hypernym account
+   list" shows them; "hypernym account use EMAIL" picks this machine's default.
+
+**MCP.** The hypernym plugin also registers an MCP server named `hypernym` (standard-library Python over stdio). Its
+tools (help, floats, analyze, wait, cancel, sync, packages, load, github status, login start/status) run the same
+commands as the skill, so analyze is still a dry run until you approve. For Codex or any other MCP host, point it
+at the same program: command `python3`, argument `<plugin dir>/skills/hypernym/scripts/hypernym_mcp_server.py`.
 
 Finished packages are saved to `~/.hypernym/packages/<owner>__<repo>/…`. Each one has the treatment prompt, a
 manifest with per-file SHA-256 at the analyzed commit, and the raw job. Every session on the machine can load
@@ -97,7 +109,11 @@ ours); it never replaces someone else's, and never comes back after you remove i
 
 ## What each plugin sends, and where
 
-**hypernym** sends HTTPS requests to your server with your key in `X-API-Key`. The requests are:
+**hypernym** sends HTTPS requests to the Zephyr you signed in to. Each request carries a signature from this
+install's device key in `X-API-Key` (a `restoria1.` statement naming the device, the server, the method, the
+path, a hash of the body, the time and a one-time nonce) — never a password or bearer token. Sign-in sends
+your principal and device addresses (public keys) and a signed device authorization, then GitHub tells the
+Zephyr which account approved. Your 12 words and private keys never leave your machine. The requests are:
 
 - account and quota checks
 - listing your floats and jobs
@@ -114,6 +130,6 @@ run. Details and tests are in [`plugins/nebula/PRIVACY.md`](plugins/nebula/PRIVA
 
 ## Files on your machine
 
-- `~/.hypernym/` holds `config.json` (your login, mode 600), `packages/`, and the status cache.
+- `~/.hypernym/` holds `identity/` (your 12-word principal and this install's device key, mode 600), `config.json` (which Zephyr you signed in to, mode 600), `packages/`, and the status cache.
 - `~/.hypernym-nebula/` holds the shared status-line launcher.
 - `~/.nebula/` holds nebula's settings and local database. See PRIVACY.md.

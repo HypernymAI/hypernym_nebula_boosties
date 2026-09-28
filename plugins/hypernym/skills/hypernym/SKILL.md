@@ -67,16 +67,31 @@ machine can read them.
 
 ## Setup — login and GitHub
 
-"hypernym login" signs in through the browser, like `claude login`: it opens GitHub, the user approves,
-and the session (30 days) is saved to `~/.hypernym/config.json`, mode 600. Run it in the background or with
-a long timeout, tell the user to approve in the browser that opened (print the URL too), and wait:
+"hypernym login" signs in through the browser, like `claude login`, with NO secret in this plugin
+(RESTORIA identity). The first time, it mints the user's principal — 12 Banksian words, their identity
+across every Zephyr — and this install's device key, both in `~/.hypernym/identity/` (mode 600). It opens
+GitHub; the Zephyr checks the account is on its invite list, the principal signs the enrollment, and the
+device is authorized. From then on every request is signed by the device key; no token is stored.
+Run it in the background or with a long timeout, tell the user to approve in the browser that opened (print
+the URL too), and wait:
 
 ```bash
 python3 <skill dir>/scripts/hypernym.py login
 ```
 
-It works on any machine with no setup: the same GitHub account always gets the same Hypernym account
-(created on first login). If the user was given a key instead, log in with the key:
+When it prints the 12 words (first login only), tell the user to write them down: they move this identity to
+another machine. On a new machine, bring the same identity with:
+
+```bash
+python3 <skill dir>/scripts/hypernym.py login --words "word1 word2 … word12"
+```
+
+Never run a plain `login` on a machine for someone who already has an identity: it mints a NEW identity, the Zephyr
+refuses it (their GitHub account already belongs to their existing identity), and sign-in fails at the last step.
+If they say they've signed in before, or they give 12 words, use `login --words`.
+
+"not on this Zephyr's invite list" means the operator has not invited that GitHub account yet — nothing was
+created. If the user was given a key instead, log in with the key:
 
 ```bash
 python3 <skill dir>/scripts/hypernym.py login --key -        # then paste the key
@@ -85,6 +100,18 @@ python3 <skill dir>/scripts/hypernym.py login --key -        # then paste the ke
 `--url` defaults to `https://zephyr-b-gpu.hypernym.ai`; `--name` defaults to `zephyr`. Logging in again
 with the same name replaces that server's login. `HYPERNYM_API_KEY` / `HYPERNYM_API_URL`, if set, take
 precedence over the config file. Never write a key into this skill's folder or the repo.
+
+One identity can hold several accounts on a Zephyr (e.g. two emails). Commands act as this machine's default
+account; if the user expected work that isn't there (e.g. `help` shows 0 jobs), check which account is in use:
+
+```bash
+python3 <skill dir>/scripts/hypernym.py account list                 # accounts, and which one this machine acts as
+python3 <skill dir>/scripts/hypernym.py account use EMAIL            # make EMAIL this machine's default
+python3 <skill dir>/scripts/hypernym.py --account EMAIL --dir "$PWD" help   # one command as another account
+```
+
+On each new machine, run `account use` once for the account that holds their work (the Pilot: `account use
+chris@hypernym.ai`, otherwise they see 0 jobs).
 
 Private repos need the rider's GitHub account linked to their Hypernym account:
 

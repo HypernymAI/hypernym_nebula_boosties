@@ -55,7 +55,10 @@ Tests (ctxshield dev repo — all pass 2026-09-27)
       reinstall → "finishing setup"; disable; no uv → clear message; a user's own status line never touched
 
 Gates (owner)
-- [ ] **BLOCKER — app credential in the hypernym plugin:** `plugins/hypernym/skills/hypernym/scripts/hypernym.py:45-46`
+- [x] **CLOSED 2026-09-28 (hypernym 0.6.0, reviewed by the release owner):** LOGIN_APP deleted; sign-in = RESTORIA via GitHub
+      (invite-only), every request signed by a per-install device key; grep of plugins/hypernym: no app id / secret / hash;
+      Zephyr B enroll endpoints live; the pilot's identity signs in (account list, help, github status). Original entry:
+      **BLOCKER — app credential in the hypernym plugin:** `plugins/hypernym/skills/hypernym/scripts/hypernym.py:45-46`
       ships `LOGIN_APP = {app_id: claudestorm, app_secret_hash: 0cabf530…}`. The server takes that hash as-is
       (`X-App-Secret-Hash`), and the same app credential is what calls `/api/users/benefact` (adds FL0WT to any account)
       and `/api/status?user_email=` (any user's balance) per ClaudeStorm's CLAUDE.md. Anyone who installs the plugin can
@@ -74,7 +77,7 @@ Gates (owner)
 - [x] TLS on Zephyr B — verified by the release owner: `*.hypernym.ai`, valid to 2027-03-03, 401 without a key
 
 Switch this Mac (owner's go; after the gates)
-- [ ] move `~/.ctxshield` → `~/.nebulashield` (DB `ctxshield.db` → `nebulashield.db`; keep retention full, wings 76);
+- [x] (done S38; renamed again to `~/.nebula` in S45) move `~/.ctxshield` → `~/.nebulashield` (DB `ctxshield.db` → `nebulashield.db`; keep retention full, wings 76);
       uninstall `ctxshield@ctxshield-local` + `hypernym@hypernym`; remove the old marketplace entries; add
       `hypernym-nebula`; install both; new session → the shared status line replaces the hand-made one-liner.
 

@@ -13,9 +13,16 @@ Hypernym CLI for Claude Code / Codex skills. Standard library only.
 
 Common: --dir PATH (repo; default cwd).
 
+Sign in: `hypernym.py login` — GitHub in the browser, invite-only, NO secret in this plugin. It mints your
+principal (12 Banksian words, ~/.hypernym/identity/principal.json, 600) and this install's device key
+(~/.hypernym/identity/device.json, 600); the Zephyr checks your GitHub invitation and enrolls the device;
+from then on every request is signed by the device key (RESTORIA `restoria1.` credential).
+`login --words "12 words"` enrolls an existing principal on a new machine; `login --key KEY` uses a key.
+
 Configuration (first match wins):
   1. HYPERNYM_API_KEY (+ optional HYPERNYM_API_URL, default https://zephyr-b-gpu.hypernym.ai)
-  2. ~/.hypernym/config.json (mode 600): {"servers": [{"name": "...", "url": "...", "api_key": "..."}]}
+  2. ~/.hypernym/config.json (mode 600): {"servers": [{"name", "url", "auth": "restoria", "device",
+     "node_address"} | {"name", "url", "api_key"}]}
 Packages: ~/.hypernym/packages/<owner>__<repo>/<completed UTC>_<commit12>_<job_id>/
 NO .get().
 """
@@ -25,6 +32,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -34,6 +42,7 @@ import webbrowser
 from pathlib import Path
 
 import nebula_statusline
+import restoria_identity
 
 HOME = Path.home() / '.hypernym'
 CONFIG = HOME / 'config.json'
@@ -41,9 +50,10 @@ PACKAGES = HOME / 'packages'
 SUBMISSIONS = HOME / 'submissions'
 DEFAULT_URL = 'https://zephyr-b-gpu.hypernym.ai'
 PAGE = 100
-# GitHub login goes through the ClaudeStorm app, which finds or creates the Zephyr user for a GitHub account.
-LOGIN_APP = {'app_id': 'claudestorm',
-             'app_secret_hash': '0cabf53047051a5636da91c1be7dcd123d72dafa08f0600e02aeeca8dfbc462f'}
+# What this plugin's device key may do on a Zephyr (RESTORIA device scopes). Nothing else is reachable —
+# never /register, /login, benefact, other users' status, or admin.
+DEVICE_SCOPES = ['account.read', 'float.read', 'github.link', 'repo_analyze.read', 'repo_analyze.submit']
+DEVICE_AUTHORIZATION_DAYS = 365
 POLL_S = 30
 
 
@@ -71,11 +81,25 @@ def pick_server(servers: list, name: str) -> dict:
 
 def call(server: dict, path: str, body: dict = None) -> dict:
     data = None
-    headers = {'X-API-Key': server['api_key']}
+    headers = {}
+    method = 'GET'
     if body is not None:
         data = json.dumps(body).encode()
         headers['Content-Type'] = 'application/json'
-    req = urllib.request.Request(f"{server['url'].rstrip('/')}{path}", data=data, headers=headers)
+        method = 'POST'
+    if 'auth' in server and server['auth'] == 'restoria':
+        device_key, device = restoria_identity.load_device()
+        signed_body = b''
+        if data is not None:
+            signed_body = data
+        headers['X-API-Key'] = restoria_identity.request_credential(
+            device_key, device, server['node_address'], method, path, signed_body)
+    else:
+        headers['X-API-Key'] = server['api_key']
+    if 'account' in server:
+        if server['account']:
+            headers['X-Restoria-Account'] = server['account']
+    req = urllib.request.Request(f"{server['url'].rstrip('/')}{path}", data=data, headers=headers, method=method)
     return json.load(urllib.request.urlopen(req, timeout=60))
 
 
@@ -281,6 +305,13 @@ def cmd_help(args, servers):
             q = call(server, "/api/me/quota")
             print(f"  auth ok: tier {q['tier']}, active floats {q['my_active_floats']}/{q['my_max_concurrent']}, "
                   f"can submit now: {q['can_submit_now']}")
+            mine = call(server, "/api/me/accounts")
+            current = [a['email'] for a in mine['accounts'] if a['current']]
+            others = [a['email'] for a in mine['accounts'] if not a['current']]
+            line = f"  acting as {', '.join(current)}"
+            if others:
+                line += f" — your other accounts here: {', '.join(others)} (switch: account use EMAIL)"
+            print(line)
             fl = repo_floats(server, info['key_lower'])
             jobs = repo_jobs(server, info['key_lower'])
         except urllib.error.HTTPError as e:
@@ -402,50 +433,78 @@ def cmd_wait(args, servers):
         time.sleep(POLL_S)
 
 
-def load_app_credentials() -> dict:
-    """App used for GitHub login: HYPERNYM_APP_ID + HYPERNYM_APP_SECRET_HASH, "app" in the config, or LOGIN_APP."""
-    if 'HYPERNYM_APP_ID' in os.environ and 'HYPERNYM_APP_SECRET_HASH' in os.environ:
-        return {'app_id': os.environ['HYPERNYM_APP_ID'], 'app_secret_hash': os.environ['HYPERNYM_APP_SECRET_HASH']}
-    if CONFIG.exists():
-        config = json.loads(CONFIG.read_text())
-        if 'app' in config:
-            return config['app']
-    return LOGIN_APP
-
-
-def app_call(url: str, app: dict, path: str, body: dict = None) -> dict:
-    headers = {'X-App-Id': app['app_id'], 'X-App-Secret-Hash': app['app_secret_hash']}
+def raw_json(url: str, method: str, path: str, body: bytes = b'', headers: dict = None) -> dict:
+    """An unauthenticated (or proof-carrying) JSON call — enrollment only."""
+    all_headers = {}
+    if headers is not None:
+        all_headers.update(headers)
     data = None
-    if body is not None:
-        data = json.dumps(body).encode()
-        headers['Content-Type'] = 'application/json'
-    req = urllib.request.Request(f"{url}{path}", data=data, headers=headers)
+    if body:
+        data = body
+        all_headers['Content-Type'] = 'application/json'
+    req = urllib.request.Request(f"{url}{path}", data=data, headers=all_headers, method=method)
     return json.load(urllib.request.urlopen(req, timeout=30))
 
 
-def browser_login(url: str, minutes: float) -> dict:
-    """GitHub login in the browser (the same flow as ClaudeStorm's login_with_github). Returns the active status."""
-    app = load_app_credentials()
+def enroll(url: str, minutes: float, words: str) -> dict:
+    """RESTORIA enrollment: principal-signed device authorization → GitHub in the browser (invite checked on
+    the Zephyr) → principal signs the enrollment → the device is authorized. No secret, token or app
+    credential ever reaches this machine."""
+    principal_key, principal, created, principal_words = restoria_identity.load_or_create_principal(words)
+    device_key, device = restoria_identity.load_or_create_device()
+    now_us = int(time.time() * 1_000_000)
+    fields = restoria_identity.device_authorization_fields(
+        device, principal, DEVICE_SCOPES, f"hypernym plugin on {socket.gethostname()}",
+        now_us, now_us + DEVICE_AUTHORIZATION_DAYS * 86400 * 1_000_000)
+    signature = restoria_identity.sign_text(principal_key, restoria_identity.device_authorization_text(fields))
     try:
-        init = app_call(url, app, "/api/github/login/init", {})
+        start = raw_json(url, 'POST', '/api/github/login/enroll/start',
+                         json.dumps({'device_authorization': fields, 'principal_signature': signature}).encode())
     except urllib.error.HTTPError as e:
-        sys.exit(f"could not start login on {url}: {http_error_text(e)}")
+        sys.exit(f"could not start sign-in on {url}: {http_error_text(e)}")
+    node = start['node_address']
+    if created:
+        print("New RESTORIA principal (your identity across every Zephyr): " + principal)
+        print("Your 12 words — write them down; they move this identity to another machine:")
+        print("  " + ' '.join(principal_words))
+        print(f"(also kept at {restoria_identity.PRINCIPAL_FILE}, mode 600)\n")
     print("Opening your browser to sign in with GitHub. If it does not open, visit:")
-    print(f"  {init['auth_url']}")
-    webbrowser.open(init['auth_url'])
-    deadline = min(time.time() + minutes * 60, init['expires_at'])
+    print(f"  {start['auth_url']}")
+    webbrowser.open(start['auth_url'])
+    status_path = f"/api/github/login/enroll/status/{start['enrollment_id']}"
+    confirm_path = f"/api/github/login/enroll/confirm/{start['enrollment_id']}"
+    deadline = min(time.time() + minutes * 60, start['expires_at'])
     while time.time() < deadline:
         time.sleep(2)
+        proof = restoria_identity.request_credential(device_key, device, node, 'GET', status_path, b'')
         try:
-            s = app_call(url, app, f"/api/github/login/status/{init['id']}")
+            st = raw_json(url, 'GET', status_path, headers={'X-Restoria-Proof': proof})
+        except urllib.error.HTTPError as e:
+            sys.exit(f"sign-in status failed: {http_error_text(e)}")
         except (urllib.error.URLError, OSError) as e:
             print(f"  (status check failed: {e}; retrying)")
             continue
-        if s['status'] == 'active':
-            return s
-        if s['status'] != 'pending':
-            sys.exit(f"login ended as {s['status']}: {s['error_message']}")
-    sys.exit("login was not approved in time; run login again")
+        if st['status'] == 'pending':
+            continue
+        if st['status'] == 'not_invited':
+            sys.exit(f"GitHub @{st['github_username']} is not on this Zephyr's invite list yet. "
+                     "Ask the operator for an invitation, then run login again.")
+        if st['status'] == 'awaiting_principal_signature':
+            statement = st['enrollment_statement']
+            if not restoria_identity.expected_enrollment_text(principal, node, statement):
+                sys.exit(f"the Zephyr asked this principal to sign an unexpected statement; refusing:\n{statement}")
+            body = json.dumps({'principal_signature': restoria_identity.sign_text(principal_key, statement)}).encode()
+            proof = restoria_identity.request_credential(device_key, device, node, 'POST', confirm_path, body)
+            try:
+                st = raw_json(url, 'POST', confirm_path, body, headers={'X-Restoria-Proof': proof})
+            except urllib.error.HTTPError as e:
+                print(f"  (confirm not accepted yet: {http_error_text(e)}; retrying)")
+                continue
+        if st['status'] == 'enrolled':
+            return {'github_username': st['github_username'], 'email': st['email'], 'node_address': node,
+                    'device': device, 'principal': principal,
+                    'expires_at': (now_us / 1_000_000) + DEVICE_AUTHORIZATION_DAYS * 86400}
+    sys.exit("sign-in was not completed in time; run login again")
 
 
 def save_server(server: dict) -> None:
@@ -463,9 +522,10 @@ def save_server(server: dict) -> None:
 
 
 def cmd_login(args, servers):
-    """Log in: browser (GitHub) by default, or --key KEY / --key - for a key you were given. Saves to config (600)."""
+    """Sign in: RESTORIA enrollment via GitHub in the browser (default; --words to bring an existing principal),
+    or --key KEY / --key - for a key you were given. Saves to config (600)."""
     url = args.url.rstrip('/')
-    server = {'name': args.name, 'url': url, 'api_key': ''}
+    server = {'name': args.name, 'url': url}
     who = ''
     if args.key:
         key = args.key
@@ -475,10 +535,12 @@ def cmd_login(args, servers):
             sys.exit("empty key")
         server['api_key'] = key
     else:
-        s = browser_login(url, args.minutes)
-        server['api_key'] = s['session_token']
-        server['expires_at'] = time.time() + 30 * 86400
-        who = f"GitHub @{s['github_username']} ({s['github_email']}), "
+        e = enroll(url, args.minutes, args.words)
+        server['auth'] = 'restoria'
+        server['device'] = e['device']
+        server['node_address'] = e['node_address']
+        server['expires_at'] = e['expires_at']
+        who = f"GitHub @{e['github_username']} as {e['email']} (principal {e['principal']}), "
     try:
         q = call(server, "/api/me/quota")
     except urllib.error.HTTPError as e:
@@ -489,7 +551,8 @@ def cmd_login(args, servers):
     print(f"logged in to {args.name} ({url}): {who}tier {q['tier']}, "
           f"max concurrent floats {q['my_max_concurrent']}. Saved to {CONFIG} (mode 600).")
     if 'expires_at' in server:
-        print(f"This login lasts 30 days (until {time.strftime('%Y-%m-%d', time.localtime(server['expires_at']))}).")
+        print(f"This device is authorized until {time.strftime('%Y-%m-%d', time.localtime(server['expires_at']))}; "
+              "every request is signed by its key — no token is stored.")
     if 'HYPERNYM_API_KEY' in os.environ:
         print("note: HYPERNYM_API_KEY is set in this environment and takes precedence over the config file.")
 
@@ -529,6 +592,34 @@ def cmd_github(args, servers):
         if s['status'] not in ('pending',):
             sys.exit(f"link ended as {s['status']}: {s['error_message']}")
     print(f"still pending after {args.minutes} min; run `github status` later")
+
+
+def cmd_account(args, servers):
+    """`account list` — your accounts on the server (one identity can hold several, e.g. two emails);
+    `account use EMAIL` — make EMAIL this machine's default for that server."""
+    server = pick_server(servers, args.server)
+    mine = call(server, "/api/me/accounts")
+    if args.action == 'list':
+        print(f"[{server['name']}] principal {mine['principal']}")
+        for a in mine['accounts']:
+            tags = []
+            if a['default']:
+                tags.append('server default')
+            if a['current']:
+                tags.append('acting as')
+            suffix = ''
+            if tags:
+                suffix = f"  ({', '.join(tags)})"
+            print(f"  {a['email']}{suffix}")
+        return
+    if not args.email:
+        sys.exit("account use needs an EMAIL")
+    if args.email not in [a['email'] for a in mine['accounts']]:
+        sys.exit(f"{args.email} is not one of your accounts on {server['name']}: "
+                 f"{', '.join(a['email'] for a in mine['accounts'])}")
+    server['account'] = args.email
+    save_server(server)
+    print(f"{server['name']}: this machine now acts as {args.email} by default (override per command with --account).")
 
 
 def cmd_cancel(args, servers):
@@ -622,6 +713,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', default='.')
     ap.add_argument('--server', default='')
+    ap.add_argument('--account', default='', help='act as this one of your accounts (email) for this command')
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('help')
     p = sub.add_parser('floats')
@@ -640,9 +732,13 @@ def main() -> None:
     p.add_argument('job_id')
     p = sub.add_parser('login')
     p.add_argument('--key', default='')
+    p.add_argument('--words', default='')
     p.add_argument('--url', default=DEFAULT_URL)
     p.add_argument('--name', default='zephyr')
     p.add_argument('--minutes', type=float, default=10)
+    p = sub.add_parser('account')
+    p.add_argument('action', choices=['list', 'use'])
+    p.add_argument('email', nargs='?', default='')
     p = sub.add_parser('github')
     p.add_argument('action', choices=['status', 'link'])
     p.add_argument('--minutes', type=float, default=5)
@@ -654,13 +750,17 @@ def main() -> None:
     args = ap.parse_args()
 
     servers = load_servers()
+    if args.account:
+        for server in servers:
+            server['account'] = args.account
     if not servers and args.cmd != 'login':
-        print("No Hypernym API key configured. Run: hypernym.py login --key YOUR_KEY [--url SERVER_URL], "
-              f"or set HYPERNYM_API_KEY (and HYPERNYM_API_URL if not {DEFAULT_URL}). See SKILL.md.")
+        print("Not signed in. Say \"hypernym login\" (GitHub in the browser, invite-only; on a machine joining an "
+              "existing identity: \"hypernym login with my 12 words\"), or hypernym login --key YOUR_KEY, "
+              f"or set HYPERNYM_API_KEY (and HYPERNYM_API_URL if not {DEFAULT_URL}).")
         sys.exit(2)
     commands = {'help': cmd_help, 'floats': cmd_floats, 'analyze': cmd_analyze, 'wait': cmd_wait,
                 'sync': cmd_sync, 'packages': cmd_packages, 'load': cmd_load, 'statuscache': cmd_statuscache,
-                'cancel': cmd_cancel, 'login': cmd_login, 'github': cmd_github}
+                'cancel': cmd_cancel, 'login': cmd_login, 'github': cmd_github, 'account': cmd_account}
     commands[args.cmd](args, servers)
 
 

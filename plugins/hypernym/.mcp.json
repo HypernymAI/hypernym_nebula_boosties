@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "hypernym": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/hypernym_mcp_server.py"]
+    }
+  }
+}

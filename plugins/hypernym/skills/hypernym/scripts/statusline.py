@@ -19,6 +19,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 STATUS = Path.home() / '.hypernym' / 'status'
+CONFIG = Path.home() / '.hypernym' / 'config.json'
 REFRESH_S = 20
 LOCK_S = 120
 RESET, DIM = '\x1b[0m', '\x1b[2m'
@@ -49,9 +50,21 @@ def refresh(cwd: str, key: str) -> None:
     log.close()
 
 
+def signed_in() -> bool:
+    """An env key, or at least one configured server (a RESTORIA device enrollment or a key)."""
+    if 'HYPERNYM_API_KEY' in os.environ:
+        return True
+    if not CONFIG.exists():
+        return False
+    return len(json.loads(CONFIG.read_text())['servers']) > 0
+
+
 def render(c: dict, stale: bool) -> str:
     parts = []
     for s in c['servers']:
+        if s['error'] == 'HTTP 401':
+            parts.append(f"{AMBER}{s['name']} signed out — run: hypernym login{RESET}")
+            continue
         if s['error']:
             parts.append(f"{RED}{s['name']} {s['error']}{RESET}")
             continue
@@ -88,6 +101,9 @@ def render(c: dict, stale: bool) -> str:
 
 def main() -> None:
     event = json.load(sys.stdin)
+    if not signed_in():
+        print(f"{CLOUD} {AMBER}hypernym: not signed in — run: hypernym login{RESET}")
+        return
     if 'workspace' in event and 'current_dir' in event['workspace']:
         cwd = event['workspace']['current_dir']
     else:
