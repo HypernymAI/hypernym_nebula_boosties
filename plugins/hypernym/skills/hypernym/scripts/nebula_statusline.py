@@ -38,7 +38,7 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 2                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 3                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'
 ORDER = ('nebulashield', 'hypernym')          # row order: shield rows, then the Zephyr line
 NICE = {'nebulashield': 'nebulashield (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}
@@ -145,7 +145,10 @@ def compose(event: str) -> list:
     out, procs = {}, {}
     for name, root in active:
         if name == 'nebulashield' and not shield_ready(root):
-            out[name] = ["\x1b[2m⋯ nebulashield: finishing setup at session start (builds its local Python environment once)\x1b[0m"]
+            chk = subprocess.run([str(root / 'bin' / 'nebulashield-run'), '--check'], capture_output=True, text=True,
+                                 timeout=TIMEOUT_S)
+            out[name] = (["\x1b[2m⋯ nebulashield: finishing setup at session start (builds its local Python environment once)\x1b[0m"]
+                         if chk.returncode == 0 else [f"✖ {last_words(chk.stderr)}"])
             continue
         argv = part_argv(name, root)
         if not Path(argv[0] if name == 'nebulashield' else argv[1]).exists():
