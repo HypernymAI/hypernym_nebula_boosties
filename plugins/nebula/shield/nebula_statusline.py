@@ -39,7 +39,7 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 6                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 7                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'
 ORDER = ('nebula', 'hypernym')          # row order: shield rows, then the Zephyr line
 NICE = {'nebula': 'nebula (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}
@@ -141,8 +141,7 @@ def compose(event: str) -> list:
         if off:
             return [f"\x1b[2mhypernym-nebula: {' and '.join(off)} installed but disabled — "
                     f"claude plugin enable {off[0]}@{MARKETPLACE}\x1b[0m"]
-        return [f"\x1b[2mhypernym-nebula: neither plugin is installed — remove this status line: "
-                f"python3 {COPY} remove\x1b[0m"]
+        return retire()
     out, procs = {}, {}
     for name, root in active:
         if name == 'nebula' and not shield_ready(root):
@@ -175,6 +174,29 @@ def compose(event: str) -> list:
             out[name] = [f"✖ {name}: no answer within {TIMEOUT_S:.0f} s"]
     return layout(out['nebula'] if 'nebula' in out else [],
                   '  '.join(out['hypernym']) if 'hypernym' in out else '', time.time())
+
+
+def registered_anywhere() -> bool:
+    """Is either plugin in Claude Code's registry in ANY scope (user, or another project)?"""
+    reg = load_json(config_dir() / 'plugins' / 'installed_plugins.json')
+    return 'plugins' in reg and any(f'{n}@{MARKETPLACE}' in reg['plugins'] for n in ORDER)
+
+
+def retire() -> list:
+    """Both plugins are UNINSTALLED (in no scope at all — a disabled plugin, or one installed only in another project,
+    keeps the status line). Claude Code has no uninstall hook, so the status line cleans up after itself, once: our
+    statusLine leaves settings.json (backed up first; a foreign one is never touched) and ~/.hypernym-nebula is deleted.
+    Your nebula data (~/.nebula) is NOT deleted here — /nebula:shield-purge does that, before uninstalling."""
+    if registered_anywhere():
+        return ["\x1b[2mhypernym-nebula: not installed for this project\x1b[0m"]
+    s = load_json(settings_path())
+    removed = current_command(s) == str(LAUNCHER)
+    if removed:
+        del s['statusLine']
+        write_settings(s)
+    if HOME_DIR.exists():
+        shutil.rmtree(HOME_DIR)
+    return [f"\x1b[2mhypernym-nebula: neither plugin is installed{' — status line removed' if removed else ''}\x1b[0m"]
 
 
 def brand_cfg() -> dict:

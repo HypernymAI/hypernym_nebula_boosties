@@ -17,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 
+from brand import SHIELD_ICON
 from settings import excluded, resolve_config
 from shield_core import Shield, sha, transcript_turn
 from tracker import Tracker
@@ -50,7 +51,8 @@ def judgement_line(tr: Tracker, sh: Shield, session_id: str) -> str:
         mark = '●' if lv >= 1 else '○'
         parts.append(f"{mark} {k} {min(lv, 9.9):.1f}×{'' if cert else '·w'}")
     worst = max(v[0] for v in level.values())
-    head = '🛡 SHIELD' if worst < 1 else '🛡 SHIELD ⚠'
+    shield = ''.join(ch for ch, _ in SHIELD_ICON[0])        # the braille shield ⠫⣿⠝ (pilot: no 🛡 emoji)
+    head = f'{shield} SHIELD' if worst < 1 else f'{shield} SHIELD ⚠'
     return f"{head}  " + '   '.join(parts) + "   (×threshold; ≥1.0 flagged; ·w = working, not certified)"
 
 

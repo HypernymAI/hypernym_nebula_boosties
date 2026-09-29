@@ -115,26 +115,27 @@ def main() -> None:
     event = json.load(sys.stdin)
     cfg_path = resolve_config(args.config)
     cfg = json.loads(cfg_path.read_text())
+    mark = icon(SHIELD_ICON) if cfg['brand']['icons'] is True else '🛡'   # the braille shield, never the emoji
     if cfg['enabled'] is not True:
-        print('🛡 off')
+        print(f'{mark} off')
         return
     if excluded(cfg, event['transcript_path'], event['cwd'] if 'cwd' in event else None):
-        print('🛡 not tracked here (excluded project)')
+        print(f'{mark} not tracked here (excluded project)')
         return
     db = Path(cfg['db_path']).expanduser()
     jsonl = Path(event['transcript_path'])
     if not jsonl.exists():                          # session just started: Claude Code has not written it yet —
-        print('🛡 waiting for the first reply')     # an explicit wait state, not fake data (CLAUDE.md Example 4)
+        print(f'{mark} waiting for the first reply')     # an explicit wait state, not fake data (CLAUDE.md Example 4)
         return
     ended = turn_ended(jsonl)
     if not db.exists():
         if ended:                                   # nothing ever recorded — the hook is not writing; catch up
             db.parent.mkdir(parents=True, exist_ok=True)
             st = catch_up(str(cfg_path), jsonl, db.parent)
-            print('🛡 ⟳ recording replies the Stop hook missed' if st in ('started', 'running') else
-                  f"🛡 ✖ catch-up sync failed — {db.parent / 'sync.log'}")
+            print(f'{mark} ⟳ recording replies the Stop hook missed' if st in ('started', 'running') else
+                  f"{mark} ✖ catch-up sync failed — {db.parent / 'sync.log'}")
         else:
-            print('🛡 no data yet')
+            print(f'{mark} no data yet')
         return
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     note = ''
@@ -147,7 +148,7 @@ def main() -> None:
     row = c.execute("SELECT live_scores_json, exchange_index FROM replies WHERE session_id=? AND live_scores_json IS NOT "
                     "NULL ORDER BY exchange_index DESC LIMIT 1", (event['session_id'],)).fetchone()
     if row is None:
-        print('🛡 waiting for the first judged reply' + note)
+        print(f'{mark} waiting for the first judged reply' + note)
         return
     levels = {}
     for h, s in json.loads(row[0]).items():
@@ -157,7 +158,7 @@ def main() -> None:
         if k not in levels or lv > levels[k][0]:
             levels[k] = (lv, cert)
     brand = cfg['brand']
-    # S51 (pilot): the shield flashes shiny for 0.8–1.0 s whenever a NEW judgement lands (the unified brand.icon_flash)
+    # S51 (pilot): the shield flashes shiny (3 frames, 2.4–2.9 s) whenever a NEW judgement lands (brand.icon_flash)
     lead = icon_flash(SHIELD_ICON, f"shield:{event['session_id']}", f"{row[1]}|{row[0]}", time.time())
     if args.row:
         print(render(levels, brand['icons'] is True, lead) + note)
