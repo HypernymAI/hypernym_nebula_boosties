@@ -388,8 +388,8 @@ def acting_account_line(server: dict) -> str:
     return line
 
 
-def fl0wt(v: float) -> str:
-    """1001539.24 → '1,001,539.24'; 500.0 → '500'."""
+def credits(v: float) -> str:
+    """1001539.24 → '1,001,539.24'; 500.0 → '500'. User-facing text says "credits", never the internal unit name."""
     return f"{v:,.2f}".rstrip('0').rstrip('.')
 
 
@@ -400,9 +400,9 @@ def payment_line(q: dict) -> str:
         return ''
     ps = q['payment_source']
     if ps['pays_from'] == 'hub':
-        return f"pays from {ps['reason']} — {fl0wt(ps['hub_available_fl0wt'])} FL0WT available"
+        return f"pays from {ps['reason']} — {credits(ps['hub_available_fl0wt'])} credits available"
     if ps['pays_from'] == 'zephyr':
-        return f"pays from this Zephyr's balance — {fl0wt(ps['zephyr_balance_fl0wt'])} FL0WT ({ps['reason']})"
+        return f"pays from this Zephyr's balance — {credits(ps['zephyr_balance_fl0wt'])} credits ({ps['reason']})"
     return f"payment source unknown right now ({ps['reason']})"
 
 
