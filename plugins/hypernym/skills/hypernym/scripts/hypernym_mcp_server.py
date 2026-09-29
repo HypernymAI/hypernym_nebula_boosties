@@ -19,7 +19,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CLI = HERE / 'hypernym.py'
 LOGIN_LOG = Path.home() / '.hypernym' / 'login.log'
-SERVER_INFO = {'name': 'hypernym', 'version': '0.6.0'}
+PLUGIN_MANIFEST = HERE.parent.parent.parent / '.claude-plugin' / 'plugin.json'
+SERVER_INFO = {'name': 'hypernym', 'version': json.loads(PLUGIN_MANIFEST.read_text())['version']}
 SUPPORTED_PROTOCOLS = ('2025-06-18', '2025-03-26', '2024-11-05')
 RUN_TIMEOUT_S = 900
 
@@ -73,11 +74,9 @@ TOOLS = [
      'description': "Make one of the user's accounts (by email) this machine's default on the Zephyr.",
      'inputSchema': {'type': 'object', 'required': ['email'], 'properties': {'email': {'type': 'string'}}}},
     {'name': 'hypernym_login_start',
-     'description': "Start sign-in (GitHub in the browser, invite-only, no secret in the plugin). Returns the URL "
-                    "to approve. Then call hypernym_login_status until it reports signed in. On first sign-in it "
-                    "prints the user's 12 words: tell them to write them down.",
-     'inputSchema': {'type': 'object', 'properties': {
-         'words': {'type': 'string', 'description': "Existing principal's 12 words (moving an identity)."}}}},
+     'description': "Start sign-in: GitHub in the browser, invite-only, nothing to copy or remember. Returns the URL "
+                    "to approve. Then call hypernym_login_status until it reports logged in.",
+     'inputSchema': {'type': 'object', 'properties': {}}},
     {'name': 'hypernym_login_status',
      'description': 'Progress of the sign-in started by hypernym_login_start.',
      'inputSchema': {'type': 'object', 'properties': {}}},
@@ -102,8 +101,6 @@ def run_cli(args: list) -> tuple:
 def login_start(arguments: dict) -> tuple:
     LOGIN_LOG.parent.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, str(CLI), 'login', '--minutes', '10']
-    if 'words' in arguments:
-        cmd += ['--words', arguments['words']]
     log = open(LOGIN_LOG, 'w')
     subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
     log.close()

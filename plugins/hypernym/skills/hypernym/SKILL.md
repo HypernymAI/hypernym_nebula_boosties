@@ -67,29 +67,16 @@ machine can read them.
 
 ## Setup — login and GitHub
 
-"hypernym login" signs in through the browser, like `claude login`, with NO secret in this plugin
-(RESTORIA identity). The first time, it mints the user's principal — 12 Banksian words, their identity
-across every Zephyr — and this install's device key, both in `~/.hypernym/identity/` (mode 600). It opens
-GitHub; the Zephyr checks the account is on its invite list, the principal signs the enrollment, and the
-device is authorized. From then on every request is signed by the device key; no token is stored.
-Run it in the background or with a long timeout, tell the user to approve in the browser that opened (print
-the URL too), and wait:
+"hypernym login" signs in through the browser, like `claude login`: it opens GitHub, the user approves, done. It
+is the same on every machine — first time or tenth — with nothing to copy, remember or type. Sign-in is
+invite-only: the Zephyr checks the GitHub account is invited and lands the user on the account Hypernym set up for
+them. The plugin holds no Hypernym secret: this machine gets its own key (`~/.hypernym/identity/device.json`, mode
+600) that signs every request, and no token is stored. Run it in the background or with a long timeout, tell the
+user to approve in the browser that opened (print the URL too), and wait:
 
 ```bash
 python3 <skill dir>/scripts/hypernym.py login
 ```
-
-This one command is right for everyone, on every machine. A first-time user gets a new identity: when it prints
-the 12 words, tell them to write them down (they are shown once). A user who already has an identity (signed in on
-another machine) is recognized from their GitHub account: in a terminal it asks for their 12 words; when you run it,
-it stops with "already has a Hypernym identity" and exits. Then ask the user for their 12 words and run:
-
-```bash
-python3 <skill dir>/scripts/hypernym.py login --words "word1 word2 … word12"
-```
-
-It finishes the SAME sign-in (no second GitHub approval) and checks the words against their identity locally before
-anything is sent. The words never leave the machine; do not echo them back or write them anywhere else.
 
 "not on this Zephyr's invite list" means the operator has not invited that GitHub account yet — nothing was
 created. If the user was given a key instead, log in with the key:

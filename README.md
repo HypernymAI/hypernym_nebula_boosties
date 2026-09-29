@@ -7,9 +7,8 @@ fails, run `gh auth setup-git` once). On macOS with Apple Silicon, run
 (leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then start a new
 Claude Code session: **nebula** (offline shield: no account, sends nothing) sets itself up in seconds, and the
 shared status line (Hypernym logo, the shield's judgement row, the Zephyr line) turns on by itself unless a custom
-`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr, say **"hypernym login"** (invite-only, through GitHub). The first time, it shows your 12 words once:
-write them down. On any other computer, the same **"hypernym login"** recognizes your GitHub account and asks for
-those 12 words, checked locally, never sent.
+`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr, say **"hypernym login"**: GitHub opens, you approve, done, on every computer
+(invite-only; an invited account lands on the account Hypernym set up for you).
 Check with `claude plugin list` and `/nebula:shield-status`; update with
 `claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && claude plugin update hypernym@hypernym-nebula`.
 
@@ -69,12 +68,11 @@ Add this repo as a plugin marketplace in Codex, then install `hypernym`.
 
 In any git repo, tell Claude:
 
-1. **"hypernym login"** opens GitHub in your browser (like `claude login`). Sign-in is invite-only: if your GitHub
-   account isn't on the Zephyr's invite list, nothing is created; if it is, you land on the account Hypernym set up for you. The plugin holds no secret of Hypernym's. The first
-   time, it gives you your identity: 12 words, shown once — write them down. On any other computer, say "hypernym
-   login" again: it recognizes your GitHub account and asks for your 12 words (checked on your machine; they never
-   leave it). Each computer gets its own key in `~/.hypernym/identity/` (readable only by you) that signs every
-   request; no token is stored. Given a key instead? Use `hypernym login --key -`.
+1. **"hypernym login"** opens GitHub in your browser, like `claude login`. Approve, and you're in, on this and any
+   other computer, with nothing to copy or remember. Sign-in is invite-only: if your GitHub account is invited, you
+   land on the account Hypernym set up for you; if it isn't, nothing is created. The plugin holds no secret of
+   Hypernym's: each computer gets its own key in `~/.hypernym/identity/` (readable only by you) that signs every
+   request, and no token is stored. Given a key instead? Use `hypernym login --key -`.
 2. **"hypernym help"** shows your account, this repo's floats and repo-analyze jobs, and any packages on disk with
    their drift.
 3. **Analyze**: describe the bug or area you want covered. Claude does a dry run first and shows exactly what
@@ -109,8 +107,8 @@ ours); it never replaces someone else's, and never comes back after you remove i
 **hypernym** sends HTTPS requests to the Zephyr you signed in to. Each request carries a signature from this
 install's device key in `X-API-Key` (a `restoria1.` statement naming the device, the server, the method, the
 path, a hash of the body, the time and a one-time nonce) — never a password or bearer token. Sign-in sends
-your principal and device addresses (public keys) and a signed device authorization, then GitHub tells the
-Zephyr which account approved. Your 12 words and private keys never leave your machine. The requests are:
+this device's address (a public key) and a signed request; GitHub then tells the Zephyr which account approved.
+The device's private key never leaves your machine. The requests are:
 
 - account and quota checks
 - listing your floats and jobs
@@ -120,13 +118,13 @@ Zephyr which account approved. Your 12 words and private keys never leave your m
 
 It sends **no source code**. The server clones the repo from GitHub itself. Private repos are cloned with the
 GitHub access you linked: the server stores that token encrypted, and each job's private checkout is deleted
-when the job ends. Drift is computed locally by hashing your working tree, and those hashes are never uploaded.
+when the job ends. Unless you already hold your own identity key, the Zephyr creates it at your first sign-in and keeps it, encrypted like the GitHub token; the Zephyr then vouches for each computer you sign in from. Drift is computed locally by hashing your working tree, and those hashes are never uploaded.
 
 **nebula** sends nothing. The only download is `uv` fetching its pinned Python packages from PyPI on first
 run. Details and tests are in [`plugins/nebula/PRIVACY.md`](plugins/nebula/PRIVACY.md).
 
 ## Files on your machine
 
-- `~/.hypernym/` holds `identity/` (your 12-word principal and this install's device key, mode 600), `config.json` (which Zephyr you signed in to, mode 600), `packages/`, and the status cache.
+- `~/.hypernym/` holds `identity/device.json` (this computer's key, mode 600), `config.json` (which Zephyr you signed in to, mode 600), `packages/`, and the status cache.
 - `~/.hypernym-nebula/` holds the shared status-line launcher.
 - `~/.nebula/` holds nebula's settings and local database. See PRIVACY.md.

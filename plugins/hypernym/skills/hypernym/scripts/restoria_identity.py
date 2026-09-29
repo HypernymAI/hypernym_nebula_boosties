@@ -1,11 +1,8 @@
-"""RESTORIA identity for the hypernym plugin — standard library only. No secret of anyone else's, ever.
+"""RESTORIA request signing for the hypernym plugin — standard library only. No secret of anyone else's, ever.
 
-The plugin holds exactly two private keys, both on this machine, both at mode 600:
-  ~/.hypernym/identity/principal.json   YOU: 12 Banksian words → your principal key (the same derivation
-                                         as a Zephyr's node identity). One principal across every Zephyr.
-                                         The words move your identity to another machine: keep them.
-  ~/.hypernym/identity/device.json      THIS install's device key. Your principal authorizes it; it signs
-                                         every request. Revocable on its own.
+The plugin holds ONE key: ~/.hypernym/identity/device.json (mode 600), this machine's device key, created on first
+sign-in. It signs every request (the `restoria1.` credential) — like a token file, but it never travels. The person
+never handles it: they sign in with GitHub, and the Zephyr vouches for this device.
 
 Crypto (byte-identical to the Zephyr's eth_account and RESTORIA's Rust, checked against both):
   Keccak-256 (Ethereum padding), secp256k1 ECDSA with RFC 6979 deterministic nonces and low-s,
@@ -24,11 +21,7 @@ import time
 from pathlib import Path
 
 IDENTITY_DIR = Path.home() / '.hypernym' / 'identity'
-PRINCIPAL_FILE = IDENTITY_DIR / 'principal.json'
 DEVICE_FILE = IDENTITY_DIR / 'device.json'
-WORDLIST = Path(__file__).resolve().parent / 'restoria_banksian_seed_wordlist.json'
-IDENTITY_DOMAIN = b'restoria-zephyr-node-identity-v1'
-WORD_COUNT = 12
 CREDENTIAL_PREFIX = 'restoria1.'
 
 # ---------------------------------------------------------------- Keccak-256
@@ -168,7 +161,7 @@ def sign_text(private_key: int, text: str) -> str:
     return (r.to_bytes(32, 'big') + s.to_bytes(32, 'big') + bytes([27 + v])).hex()
 
 
-# ---------------------------------------------------------------- canonical statements
+# ---------------------------------------------------------------- signed requests
 
 def canonical_text(domain_tag: str, fields: list) -> str:
     """Domain tag, then key=value lines in the given order, \\n-joined, no trailing newline."""
@@ -182,19 +175,6 @@ def canonical_text(domain_tag: str, fields: list) -> str:
     return '\n'.join(lines)
 
 
-def device_authorization_fields(device: str, principal: str, scopes: list, label: str,
-                                authorized_at_micros: int, expires_at_micros: int) -> dict:
-    return {'device': device, 'principal': principal, 'scopes': ','.join(sorted(scopes)), 'label': label,
-            'authorized_at': str(authorized_at_micros), 'expires_at': str(expires_at_micros)}
-
-
-def device_authorization_text(fields: dict) -> str:
-    return canonical_text('RESTORIA-DEVICE-AUTHORIZATION-v1', [
-        ('device', fields['device']), ('principal', fields['principal']), ('scopes', fields['scopes']),
-        ('label', fields['label']), ('authorized_at', fields['authorized_at']),
-        ('expires_at', fields['expires_at'])])
-
-
 def request_credential(device_key: int, device: str, audience: str, method: str, target: str, body: bytes) -> str:
     """The X-API-Key value for one request: restoria1.<base64url(statement)>.<hex signature>.
     `target` is the path + query exactly as sent on the wire."""
@@ -206,46 +186,8 @@ def request_credential(device_key: int, device: str, audience: str, method: str,
     return f"{CREDENTIAL_PREFIX}{encoded}.{sign_text(device_key, text)}"
 
 
-def expected_enrollment_text(principal: str, node: str, statement: str) -> bool:
-    """Before the principal signs what the node sends back: it must be an enrollment of THIS principal
-    attested by THE node we enrolled with — nothing else ever gets the principal's signature."""
-    lines = statement.split('\n')
-    if lines[0] != 'RESTORIA-PRINCIPAL-ENROLLMENT-v1':
-        return False
-    if len(lines) != 5:
-        return False
-    if lines[1] != f"principal={principal}":
-        return False
-    if not lines[2].startswith('github_user_id='):
-        return False
-    return lines[3] == f"attesting_node={node.lower()}"
 
-
-# ---------------------------------------------------------------- key files
-
-def _load_words() -> list:
-    table = json.loads(WORDLIST.read_text())
-    words = table['words']
-    if len(words) != table['count']:
-        raise ValueError("Banksian word table is malformed")
-    return words
-
-
-def _key_from_words(words: list) -> int:
-    table = _load_words()
-    index = {w: i for i, w in enumerate(table)}
-    if len(words) != WORD_COUNT:
-        raise ValueError(f"a principal is exactly {WORD_COUNT} words, got {len(words)}")
-    value = 0
-    for w in words:
-        if w.lower() not in index:
-            raise ValueError(f"not a Banksian word: {w!r}")
-        value = (value << 10) | index[w.lower()]
-    key = int.from_bytes(hashlib.sha256(IDENTITY_DOMAIN + value.to_bytes(15, 'big')).digest(), 'big')
-    if not 1 <= key < N:
-        raise ValueError("these words derive an invalid key; choose other words")
-    return key
-
+# ---------------------------------------------------------------- the device key
 
 def _write_secret(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,66 +198,6 @@ def _write_secret(path: Path, obj: dict) -> None:
     finally:
         os.umask(old)
     os.chmod(path, 0o600)
-
-
-PENDING_FILE = IDENTITY_DIR / 'pending_enrollment.json'
-
-
-def principal_from_words(words_text: str) -> tuple:
-    """(private_key, address, words) derived locally from 12 words. Nothing is written or sent."""
-    words = [w.lower() for w in words_text.split()]
-    key = _key_from_words(words)
-    return key, address_of(key), words
-
-
-def mint_principal() -> tuple:
-    """A brand-new principal (private_key, address, words) — held in memory until enrollment confirms it."""
-    table = _load_words()
-    value = int.from_bytes(secrets.token_bytes(15), 'big')
-    words = []
-    for _ in range(WORD_COUNT):
-        words.append(table[value & 1023])
-        value >>= 10
-    words.reverse()
-    key = _key_from_words(words)
-    return key, address_of(key), words
-
-
-def load_principal():
-    """The saved principal (private_key, address, words), or None if this machine has none."""
-    if not PRINCIPAL_FILE.exists():
-        return None
-    saved = json.loads(PRINCIPAL_FILE.read_text())
-    key = _key_from_words(saved['words'])
-    return key, address_of(key), saved['words']
-
-
-def save_principal(words: list) -> None:
-    key = _key_from_words(words)
-    if PRINCIPAL_FILE.exists():
-        PRINCIPAL_FILE.replace(PRINCIPAL_FILE.with_suffix(f".replaced_{int(time.time())}.json"))
-    _write_secret(PRINCIPAL_FILE, {'address': address_of(key), 'words': words})
-
-
-def save_pending(pending: dict) -> None:
-    _write_secret(PENDING_FILE, pending)
-
-
-def load_pending(url: str, max_age_s: int = 1800):
-    """A sign-in paused at 'this GitHub account already has an identity' on this server, if recent."""
-    if not PENDING_FILE.exists():
-        return None
-    pending = json.loads(PENDING_FILE.read_text())
-    if pending['url'] != url:
-        return None
-    if time.time() - pending['created_at'] > max_age_s:
-        return None
-    return pending
-
-
-def clear_pending() -> None:
-    if PENDING_FILE.exists():
-        PENDING_FILE.unlink()
 
 
 def load_or_create_device() -> tuple:
