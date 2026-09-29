@@ -39,6 +39,8 @@ HERE = Path(__file__).resolve().parent
 CLASS_OF = {'H08_S2': 'confession', 'H08_S6': 'confession', 'H15_S2': 'handback', 'H15_S6': 'handback',
             'H06_S2': 'claim', 'H13_S6': 'repetition'}
 ORDER = ('confession', 'handback', 'claim', 'repetition')
+# the badge's words (pilot, 2026-09-29: "confe makes no immediate sense. confess. handback. claim. repeat.")
+LABEL = {'confession': 'confess', 'handback': 'handback', 'claim': 'claim', 'repetition': 'repeat'}
 RESET, BLINK, BOLD, DIM = '\x1b[0m', '\x1b[5m', '\x1b[1m', '\x1b[2m'
 DELTA_MAX = 4 * 1024 * 1024                            # a larger unrecorded tail is unrecorded without parsing it
 SYNC_RUNNING_S = 120                                   # a lock younger than this = a sync in flight
@@ -113,7 +115,7 @@ def render(levels: dict, icons: bool, lead_icon: str = '') -> str:
         lv, cert = levels[k]
         r, g, b = rgb(lv)
         style = (BLINK + BOLD if (lv >= 1.0 and cert) else '') + f'\x1b[38;2;{r};{g};{b}m'
-        parts.append(f"{style}{k[:5]} {bar(lv)} {min(lv, 9.9):.1f}{RESET}")
+        parts.append(f"{style}{LABEL[k]} {bar(lv)} {min(lv, 9.9):.1f}{RESET}")
     worst = max(v[0] for v in levels.values())
     r, g, b = rgb(worst)
     lead = (lead_icon or icon(SHIELD_ICON)) if icons else f"\x1b[38;2;{r};{g};{b}m🛡{RESET}"   # S30; 🛡 = backup
@@ -180,7 +182,7 @@ def main() -> None:
         print(render(levels, False) + note)
         return
     # 4-row logo at the LEFT (so its rows stay column-aligned whatever width the terminal gives 🛡); badge on row 2,
-    # wordmark after repet on row 2 (S26h)
+    # wordmark after repeat on row 2 (S26h)
     alpha, mode = brand['rest_alpha'], brand['mode']
     if brand['bg'] == 'auto':
         try:
@@ -191,7 +193,7 @@ def main() -> None:
     else:
         bg = tuple(brand['bg'])
     rows, word = logo(time.time(), bg, mode, alpha, brand['mark'])
-    # logo rows at the LEFT; the shield line (badge + wordmark after `repet`) rides the middle logo row
+    # logo rows at the LEFT; the shield line (badge + wordmark after `repeat`) rides the middle logo row
     k = (len(rows) - 1) // 2                                     # full 4 rows → 1 · mid 3 → 1 · compact 1 → 0
     lines = list(rows)
     if brand['icons'] is True:
