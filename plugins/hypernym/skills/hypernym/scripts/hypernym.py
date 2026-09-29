@@ -143,6 +143,63 @@ def newest_pushed_commit(root: Path) -> str:
     sys.exit("none of the last 500 commits on this branch exist on origin; push first")
 
 
+# What the server will NOT see: it clones GitHub, so everything this computer has beyond the analyzed commit is read
+# from GitHub's version instead. Files always change — this is information, never an error. Read-only git.
+NOT_ON_GITHUB_LIST = 25
+SECRET_NAME = re.compile(r'(^\.env|\.pem$|\.key$|\.p12$|\.pfx$|\.keystore$|\.jks$|^id_rsa|^id_ed25519|^id_ecdsa|secret|'
+                         r'credential)', re.I)
+
+
+def secret_looking(path: str) -> bool:
+    """Named only as a count, never printed: .env*, keys, certificates, anything called secret/credential."""
+    return SECRET_NAME.search(Path(path).name) is not None
+
+
+def name_status(root: Path, *args) -> dict:
+    """path → (status letter, shown text) from `git diff --name-status …`; renames shown as old → new."""
+    out = {}
+    for line in git(root, 'diff', '--name-status', *args).stdout.splitlines():
+        parts = line.split('\t')
+        letter = parts[0][:1]
+        if letter in ('R', 'C') and len(parts) == 3:
+            out[parts[2]] = (letter, f"{parts[1]} → {parts[2]}", (parts[1], parts[2]))
+        elif len(parts) == 2:
+            out[parts[1]] = (letter, parts[1], (parts[1],))
+    return out
+
+
+def not_on_github(root: Path, base: str) -> list:
+    """Lines for the dry run / approval dialog: what differs between GitHub commit `base` and this computer."""
+    ahead = int(git(root, 'rev-list', '--count', f"{base}..HEAD").stdout.strip())
+    committed = name_status(root, base, 'HEAD')
+    uncommitted = name_status(root, 'HEAD')
+    untracked = [p for p in git(root, 'ls-files', '--others', '--exclude-standard').stdout.splitlines() if p]
+    tracked = dict(committed)
+    tracked.update(uncommitted)                       # a file changed in both: its working-tree state is what differs
+    if not ahead and not tracked and not untracked:
+        return [f"  This computer matches GitHub commit {base[:12]}: nothing here is missing from what the server reads."]
+    if ahead:
+        head = f"This computer is {ahead} commit{'s' if ahead != 1 else ''} ahead"
+    else:
+        head = "This computer has no unpushed commits"
+    lines = [f"  The server reads GitHub commit {base[:12]}. {head}; these files differ and the package will describe "
+             "their GitHub version.",
+             f"  {ahead} commit{'s' if ahead != 1 else ''} not pushed ({len(committed)} files) · {len(uncommitted)} "
+             f"uncommitted · {len(untracked)} untracked (not listed; the server never sees them)"]
+    hidden = sum(1 for _, _, paths in tracked.values() if any(secret_looking(p) for p in paths))
+    hidden += sum(1 for p in untracked if secret_looking(p))
+    shown = [(letter, text) for letter, text, paths in sorted(tracked.values(), key=lambda v: v[1])
+             if not any(secret_looking(p) for p in paths)]
+    for letter, text in shown[:NOT_ON_GITHUB_LIST]:
+        lines.append(f"    {letter}  {text}")
+    if len(shown) > NOT_ON_GITHUB_LIST:
+        lines.append(f"    …and {len(shown) - NOT_ON_GITHUB_LIST} more")
+    if hidden:
+        lines.append(f"    ({hidden} secret-looking file{'s' if hidden != 1 else ''} (.env, keys, credentials) counted, "
+                     "not named)")
+    return lines
+
+
 def sha256_at(root: Path, commit: str, path: str):
     r = subprocess.run(['git', '-C', str(root), 'show', f"{commit}:{path}"], capture_output=True)
     if r.returncode != 0:
@@ -331,6 +388,24 @@ def acting_account_line(server: dict) -> str:
     return line
 
 
+def fl0wt(v: float) -> str:
+    """1001539.24 → '1,001,539.24'; 500.0 → '500'."""
+    return f"{v:,.2f}".rstrip('0').rstrip('.')
+
+
+def payment_line(q: dict) -> str:
+    """Where a submission's credits come from, as the Zephyr decides it (GET /api/me/quota → payment_source; Zephyrs
+    without that field → '')."""
+    if 'payment_source' not in q:
+        return ''
+    ps = q['payment_source']
+    if ps['pays_from'] == 'hub':
+        return f"pays from {ps['reason']} — {fl0wt(ps['hub_available_fl0wt'])} FL0WT available"
+    if ps['pays_from'] == 'zephyr':
+        return f"pays from this Zephyr's balance — {fl0wt(ps['zephyr_balance_fl0wt'])} FL0WT ({ps['reason']})"
+    return f"payment source unknown right now ({ps['reason']})"
+
+
 def cmd_help(args, servers):
     for line in ABOUT:
         print(line)
@@ -440,14 +515,29 @@ def cmd_analyze(args, servers):
     body = {'repo_url': info['url'], 'commit': commit, 'problem_statement': question,
             'top_n': args.top_n, 'per_float_budget': args.budget, 'session_seed': seed}
     if not execute:
+        try:
+            payer = acting_account_line(server)
+            pays = payment_line(call(server, "/api/me/quota"))
+            if pays:
+                payer += f"\n             {pays}"
+        except urllib.error.HTTPError as e:
+            payer = f"could not read which account ({http_error_text(e)})"
+        except (urllib.error.URLError, OSError) as e:
+            payer = f"could not read which account ({server['url']} unreachable: {e})"
         print("DRY RUN — nothing submitted. Would POST /api/repo/analyze to "
               f"{server['name']} ({server['url']}):")
         print(f"  repo:      {info['url']}")
         print(f"  commit:    {commit}")
         print(f"  top_n:     {args.top_n}   per_float_budget: {args.budget}")
         print(f"  question:  {question}")
+        print(f"  cost:      up to {args.top_n} new floats = up to {args.top_n} credits (files the server has "
+              "compressed before cost nothing)")
+        print(f"  paid by:   {payer}")
+        print("Not on GitHub:")
+        print('\n'.join(not_on_github(info['root'], commit)))
         print("A real run creates a float for every ranked file the server has not compressed before.")
-        print("Re-run with --execute only when the user has explicitly approved this submission.")
+        print("To submit: the hypernym_analyze tool (execute) asks the person in Hypernym's approval dialog; from a "
+              "shell, --execute only after their explicit yes.")
         if level == 'auto':
             print(f"(sending is auto for this repo: --auto may submit without asking, up to "
                   f"{policy['auto_daily_credits']} credits a day)")

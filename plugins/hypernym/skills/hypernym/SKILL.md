@@ -43,21 +43,28 @@ If a package exists, offer to load it.
 ## Run repo analyze
 
 1. Get the question from the user: the bug, feature, or area they want the package to cover. Do not
-   invent one. Ask how many files (`--top-n`, default 40) only if they care about size or cost.
-2. Dry run first — always. Without `--execute` the script submits nothing and prints exactly what it
-   would send:
+   invent one. You may first ask with AskUserQuestion (multiple choice, with a preview) for the question's focus
+   and the file count — 20, 40 (default) or 80 files; the count is the most credits it can use. These only shape
+   the dry run; the approval dialog below is still the final gate.
+2. Dry run first — always. It submits nothing and shows exactly what would be sent, the cost (up to N new floats =
+   up to N credits), who pays (the account this machine acts as), and **what is not on GitHub**: the server reads
+   the pushed commit, so commits not pushed, uncommitted edits and untracked files are described in their GitHub
+   version (or not at all). That is information, not an error — files always change. Show it to the user.
    ```bash
    python3 <skill dir>/scripts/hypernym.py --dir "$PWD" analyze --question "<question>" [--top-n N]
    ```
-   Show that to the user. A real run creates a float (paid compression) for every ranked file the
-   server has not compressed before. Add `--execute` ONLY when the user explicitly approves this
-   submission in their latest message; never on your own initiative, never to "test".
+   **To submit, use the MCP tool `hypernym_analyze` with `execute: true`.** It shows the person Hypernym's own
+   approval dialog with that preview (Submit / Cancel, file count); only their Submit sends anything, and
+   Decline or Cancel sends nothing. You cannot approve for them — don't try to. If the tool says the client
+   cannot show the dialog, show the dry run and get an explicit yes in their latest message; only then run the
+   CLI with `--execute`. Never submit on your own initiative, never to "test".
    The person's **sending** setting (portal → Sending, printed by `help`) decides further:
    - `off` for this repo: nothing is sent; the script refuses. Don't work around it.
    - `ask` (the default): the rule above.
-   - `auto`: you may submit on your own with `--auto` (instead of `--execute`) when an analysis would clearly
-     help the task. The script enforces the person's daily credit limit and refuses beyond it; then show
-     the dry run and ask. Say that you submitted and why.
+   - `auto`: you may start a submission on your own with `auto: true` (CLI `--auto`) when an analysis would
+     clearly help the task. Through the MCP tool the approval dialog still opens; where no dialog can be shown,
+     the script submits within the person's daily credit limit and refuses beyond it (then show the dry run and
+     ask). Say that you submitted and why.
    It analyzes the newest commit that exists on GitHub (the server clones from there) and says so if
    the local HEAD is ahead. Private repos work if the user's Hypernym account has GitHub linked.
    If the server has its dry-run gate on, an executed job stops after ranking and `wait` prints the

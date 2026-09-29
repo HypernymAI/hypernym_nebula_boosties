@@ -8,6 +8,14 @@ any other MCP host get identical behavior — the dry-run rule for analyze, sign
     python3 hypernym_mcp_server.py        (the host launches it; cwd = the project the session is in)
 
 Tools take `dir` (the git repo; default: the server's working directory). NO .get().
+
+THE APPROVAL GATE (hypernym_analyze with execute / auto): the TOOL asks, not the agent. The server runs the dry run,
+then sends `elicitation/create` to the client — the preview (repo, commit, what is not on GitHub, question, cost, who
+pays) and a two-field form (submit / cancel, files). Only accept + submit runs the CLI with --execute (or --auto) and the
+chosen file count; decline, cancel, or a failed dialog → "not submitted", nothing sent. The answer comes from the
+person's dialog, so the agent cannot approve on their behalf. A client that did not advertise the `elicitation`
+capability at initialize gets execute REFUSED with the dry run and the instruction to get an explicit yes; `auto`
+there keeps its old meaning (the person's portal Sending setting is their consent, and the CLI enforces its limit).
 """
 import json
 import os
@@ -23,6 +31,9 @@ PLUGIN_MANIFEST = HERE.parent.parent.parent / '.claude-plugin' / 'plugin.json'
 SERVER_INFO = {'name': 'hypernym', 'version': json.loads(PLUGIN_MANIFEST.read_text())['version']}
 SUPPORTED_PROTOCOLS = ('2025-06-18', '2025-03-26', '2024-11-05')
 RUN_TIMEOUT_S = 900
+CLIENT = {'elicitation': False}                   # set from the client's capabilities at initialize
+BACKLOG = []                                      # messages that arrived while waiting for a dialog answer
+ELICIT_SEQ = [0]
 
 DIR_PROP = {'type': 'string', 'description': 'Path of the git repo (default: the working directory).'}
 TOOLS = [
@@ -40,15 +51,17 @@ TOOLS = [
                                                       'files': {'type': 'boolean', 'description': 'List files too.'}}}},
     {'name': 'hypernym_analyze',
      'description': "Repo analyze for this repo's newest commit on GitHub. DRY RUN by default: shows exactly what "
-                    "would be sent (repo URL, commit, question — never source code). Set execute=true ONLY after "
-                    "the user explicitly approves this submission: a real run costs a float per new file.",
+                    "would be sent (repo URL, commit, question — never source code), what this computer has that is "
+                    "not on GitHub, the cost and who pays. execute=true shows the person an approval dialog with that "
+                    "preview; only their Submit sends anything. This is the normal way to submit.",
      'inputSchema': {'type': 'object', 'required': ['question'], 'properties': {
          'dir': DIR_PROP,
          'question': {'type': 'string', 'description': 'The bug or area the analysis should cover.'},
          'top_n': {'type': 'integer', 'description': 'Files to float (default 40).'},
          'budget': {'type': 'integer', 'description': 'Per-float budget (default 3077).'},
          'commit': {'type': 'string', 'description': 'Commit to analyze (default: newest pushed).'},
-         'execute': {'type': 'boolean', 'description': 'Submit for real. Only with explicit user approval.'},
+         'execute': {'type': 'boolean', 'description': "Submit for real. The person approves in Hypernym's own "
+                                                        "dialog (shown by this tool); declining sends nothing."},
          'auto': {'type': 'boolean', 'description': "Submit without asking. Only allowed when the person's sending "
                                                      "setting for this repo is auto; refused over their daily limit."}}}},
     {'name': 'hypernym_wait',
@@ -139,20 +152,7 @@ def call_tool(name: str, arguments: dict) -> tuple:
                 args.append('--files')
         return run_cli(args)
     if name == 'hypernym_analyze':
-        args = ['--dir', _dir(arguments), 'analyze', '--question', arguments['question']]
-        if 'top_n' in arguments:
-            args += ['--top-n', str(arguments['top_n'])]
-        if 'budget' in arguments:
-            args += ['--budget', str(arguments['budget'])]
-        if 'commit' in arguments:
-            args += ['--commit', arguments['commit']]
-        if 'execute' in arguments:
-            if arguments['execute'] is True:
-                args.append('--execute')
-        if 'auto' in arguments:
-            if arguments['auto'] is True:
-                args.append('--auto')
-        return run_cli(args)
+        return analyze(arguments)
     if name == 'hypernym_wait':
         args = ['--dir', _dir(arguments), 'wait', arguments['job_id']]
         if 'minutes' in arguments:
@@ -182,6 +182,96 @@ def call_tool(name: str, arguments: dict) -> tuple:
     raise KeyError(name)
 
 
+def analyze_args(arguments: dict, top_n: int) -> list:
+    args = ['--dir', _dir(arguments), 'analyze', '--question', arguments['question'], '--top-n', str(top_n)]
+    if 'budget' in arguments:
+        args += ['--budget', str(arguments['budget'])]
+    if 'commit' in arguments:
+        args += ['--commit', arguments['commit']]
+    return args
+
+
+def analyze(arguments: dict) -> tuple:
+    top_n = arguments['top_n'] if 'top_n' in arguments else 40
+    flag = None
+    if 'execute' in arguments and arguments['execute'] is True:
+        flag = '--execute'
+    elif 'auto' in arguments and arguments['auto'] is True:
+        flag = '--auto'
+    if flag is None:
+        return run_cli(analyze_args(arguments, top_n))                       # the dry run
+    if not CLIENT['elicitation']:
+        if flag == '--auto':
+            return run_cli(analyze_args(arguments, top_n) + ['--auto'])
+        dry, failed = run_cli(analyze_args(arguments, top_n))
+        return ("NOT SUBMITTED — this client cannot show Hypernym's approval dialog (it did not offer MCP "
+                "elicitation), so this tool does not submit. Show the person the dry run below and ask for an explicit "
+                "yes; nothing was sent.\n\n" + dry), True
+    dry, failed = run_cli(analyze_args(arguments, top_n))
+    if failed:
+        return dry, True
+    try:
+        answer = elicit(dry + "\n\nSubmit this analysis? Nothing is sent unless you choose Submit.", {
+            'type': 'object',
+            'properties': {
+                'decision': {'type': 'string', 'title': 'Submit this analysis?', 'enum': ['submit', 'cancel'],
+                             'enumNames': [f'Submit — up to {top_n} credits', 'Cancel — send nothing'],
+                             'default': 'cancel'},
+                'top_n': {'type': 'integer', 'title': 'Files to analyze (= most credits it can use)',
+                          'minimum': 1, 'maximum': 200, 'default': top_n}},
+            'required': ['decision']})
+    except EOFError:
+        return "not submitted: the client closed the connection before answering; nothing was sent.", True
+    if 'error' in answer:
+        return (f"not submitted: the approval dialog failed ({answer['error']['message']}); nothing was sent."), True
+    result = answer['result']
+    content = result['content'] if 'content' in result else {}
+    if result['action'] != 'accept' or 'decision' not in content or content['decision'] != 'submit':
+        how = {'decline': 'declined in the approval dialog', 'cancel': 'closed the approval dialog',
+               'accept': 'chose Cancel in the approval dialog'}[result['action']]
+        return f"not submitted: the person {how}; nothing was sent.", False
+    chosen = content['top_n'] if 'top_n' in content else top_n
+    return run_cli(analyze_args(arguments, chosen) + [flag])
+
+
+def next_message():
+    """The next client message: first any that arrived while a dialog was open, then stdin. None at end of input."""
+    if BACKLOG:
+        return BACKLOG.pop(0)
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return None
+        if line.strip():
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError as e:
+                respond(None, error={'code': -32700, 'message': f"parse error: {e}"})
+
+
+def elicit(message: str, schema: dict) -> dict:
+    """Send elicitation/create and wait for THE answer (the whole JSON-RPC response). Pings are answered meanwhile;
+    anything else is kept for the main loop."""
+    ELICIT_SEQ[0] += 1
+    rid = f"hypernym-approval-{ELICIT_SEQ[0]}"
+    sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': rid, 'method': 'elicitation/create',
+                                 'params': {'message': message, 'requestedSchema': schema}}) + '\n')
+    sys.stdout.flush()
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError
+        if not line.strip():
+            continue
+        msg = json.loads(line)
+        if 'method' not in msg and 'id' in msg and msg['id'] == rid:
+            return msg
+        if 'method' in msg and msg['method'] == 'ping' and 'id' in msg:
+            respond(msg['id'], {})
+            continue
+        BACKLOG.append(msg)
+
+
 def respond(message_id, result=None, error=None) -> None:
     out = {'jsonrpc': '2.0', 'id': message_id}
     if error is not None:
@@ -193,6 +283,8 @@ def respond(message_id, result=None, error=None) -> None:
 
 
 def handle(message: dict) -> None:
+    if 'method' not in message:
+        return  # a stray response (e.g. to a dialog that already ended): nothing to do
     method = message['method']
     if 'id' not in message:
         return  # notification (notifications/initialized, cancellations): nothing to answer
@@ -201,6 +293,7 @@ def handle(message: dict) -> None:
     if 'params' in message:
         params = message['params']
     if method == 'initialize':
+        CLIENT['elicitation'] = 'capabilities' in params and 'elicitation' in params['capabilities']
         version = SUPPORTED_PROTOCOLS[0]
         if 'protocolVersion' in params:
             if params['protocolVersion'] in SUPPORTED_PROTOCOLS:
@@ -230,14 +323,10 @@ def handle(message: dict) -> None:
 
 
 def main() -> None:
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError as e:
-            respond(None, error={'code': -32700, 'message': f"parse error: {e}"})
-            continue
+    while True:
+        message = next_message()
+        if message is None:
+            return
         handle(message)
 
 
