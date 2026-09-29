@@ -21,6 +21,14 @@ python3 <skill dir>/scripts/hypernym.py about
 Prints what the two plugins are (Nebula, the local shield; Hypernym, the Zephyr connector) and the install and
 update lines. Works before sign-in. Show it as-is.
 
+## At session start (automatic)
+
+When a session starts, resumes, is cleared or is compacted inside a GitHub repo, a hook adds a short note to the
+context: the newest package for this repo, the question it answered, how far the code has drifted from it (the files
+to read directly), and the exact `load` command. It never loads the package itself and never calls the network.
+Load the package when the work touches this repo's code. After a compaction, a package loaded earlier is gone from
+context: reload it if the work still needs it. `HYPERNYM_SESSION_CONTEXT=0` turns the note off.
+
 ## "hypernym help" — always start here
 
 ```bash

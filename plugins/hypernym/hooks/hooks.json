@@ -1,9 +1,12 @@
 {
-  "description": "hypernym: record the plugin location and keep the ~/.hypernym/bin/statusline launcher current.",
+  "description": "hypernym: keep the status line launcher current; tell each new, resumed, cleared or compacted session what context package this repo has (local only, never the network).",
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_start.py\"" } ] }
+                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_start.py\"" } ] },
+      { "matcher": "startup|resume|clear|compact",
+        "hooks": [ { "type": "command", "timeout": 10,
+                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_context.py\"" } ] }
     ]
   }
 }
