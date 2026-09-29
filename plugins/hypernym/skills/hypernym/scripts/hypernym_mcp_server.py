@@ -48,7 +48,9 @@ TOOLS = [
          'top_n': {'type': 'integer', 'description': 'Files to float (default 40).'},
          'budget': {'type': 'integer', 'description': 'Per-float budget (default 3077).'},
          'commit': {'type': 'string', 'description': 'Commit to analyze (default: newest pushed).'},
-         'execute': {'type': 'boolean', 'description': 'Submit for real. Only with explicit user approval.'}}}},
+         'execute': {'type': 'boolean', 'description': 'Submit for real. Only with explicit user approval.'},
+         'auto': {'type': 'boolean', 'description': "Submit without asking. Only allowed when the person's sending "
+                                                     "setting for this repo is auto; refused over their daily limit."}}}},
     {'name': 'hypernym_wait',
      'description': 'Poll a repo-analyze job; downloads the package when it completes.',
      'inputSchema': {'type': 'object', 'required': ['job_id'], 'properties': {
@@ -147,6 +149,9 @@ def call_tool(name: str, arguments: dict) -> tuple:
         if 'execute' in arguments:
             if arguments['execute'] is True:
                 args.append('--execute')
+        if 'auto' in arguments:
+            if arguments['auto'] is True:
+                args.append('--auto')
         return run_cli(args)
     if name == 'hypernym_wait':
         args = ['--dir', _dir(arguments), 'wait', arguments['job_id']]

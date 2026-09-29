@@ -72,6 +72,8 @@ def zephyr_signature(c: dict) -> str:
 
 def render(c: dict, stale: bool, icon: str) -> str:
     parts = []
+    if 'sending_off' in c:
+        parts.append(f"{GREY}sending off for this repo{RESET}")
     for s in c['servers']:
         if s['error'] == 'HTTP 401':
             parts.append(f"{AMBER}{s['name']} signed out — run: hypernym login{RESET}")

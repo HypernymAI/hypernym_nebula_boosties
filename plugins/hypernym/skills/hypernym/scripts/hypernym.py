@@ -338,6 +338,18 @@ def cmd_help(args, servers):
     info = repo_info(args.dir)
     print(f"repo: {info['key']}  (local HEAD {info['head'][:12]})")
     print(f"config: {len(servers)} server(s)")
+    if portal_of(servers) is not None:
+        try:
+            policy = fetch_policy(servers)
+        except (urllib.error.URLError, OSError) as e:
+            policy = cached_policy()
+            print(f"(portal unreachable: {e}; using the last sending setting read)")
+        level = sending_level(policy, info['key_lower'])
+        print(f"sending for this repo: {level} (change it on the portal's Sending tab: "
+              f"{portal_of(servers)['portal']}/account?tab=sending)")
+        if level == 'off':
+            print("nothing is sent for this repo; local packages still load")
+            return
     for server in servers:
         print(f"\n[{server['name']}] {server['url']}")
         try:
@@ -390,6 +402,29 @@ def cmd_floats(args, servers):
 def cmd_analyze(args, servers):
     info = repo_info(args.dir)
     server = pick_server(servers, args.server)
+    execute = args.execute
+    if args.auto:
+        execute = True
+    policy = None
+    if portal_of(servers) is not None:
+        try:
+            policy = fetch_policy(servers)
+        except (urllib.error.URLError, OSError) as e:
+            # Fail closed: without the person's current setting, nothing is sent.
+            if execute:
+                sys.exit(f"could not read your sending setting from the portal ({e}); nothing was sent")
+            policy = cached_policy()
+    level = sending_level(policy, info['key_lower'])
+    if level == 'off':
+        sys.exit(f"sending is off for {info['key']} (your portal's Sending tab): nothing was sent")
+    if args.auto:
+        if level != 'auto':
+            sys.exit(f"sending for {info['key']} is '{level}', not auto: show the dry run and ask the person")
+        spent = auto_spent_today()
+        limit = policy['auto_daily_credits']
+        if spent + args.top_n > limit:
+            sys.exit(f"this could use up to {args.top_n} credits and {spent} of today's {limit} auto credits are "
+                     "used: show the dry run and ask the person")
     question = args.question
     if args.question_file:
         question = Path(args.question_file).read_text()
@@ -404,7 +439,7 @@ def cmd_analyze(args, servers):
     seed = f"{info['key_lower'].replace('/', '__')}-{commit[:12]}-{stamp}"
     body = {'repo_url': info['url'], 'commit': commit, 'problem_statement': question,
             'top_n': args.top_n, 'per_float_budget': args.budget, 'session_seed': seed}
-    if not args.execute:
+    if not execute:
         print("DRY RUN — nothing submitted. Would POST /api/repo/analyze to "
               f"{server['name']} ({server['url']}):")
         print(f"  repo:      {info['url']}")
@@ -413,6 +448,9 @@ def cmd_analyze(args, servers):
         print(f"  question:  {question}")
         print("A real run creates a float for every ranked file the server has not compressed before.")
         print("Re-run with --execute only when the user has explicitly approved this submission.")
+        if level == 'auto':
+            print(f"(sending is auto for this repo: --auto may submit without asking, up to "
+                  f"{policy['auto_daily_credits']} credits a day)")
         return
     try:
         r = call(server, "/api/repo/analyze", body)
@@ -423,6 +461,8 @@ def cmd_analyze(args, servers):
         {'job_id': r['job_id'], 'server': server['name'], 'repo': info['key'], 'commit': commit, 'question': question,
          'top_n': args.top_n, 'per_float_budget': args.budget, 'session_seed': seed, 'submitted_at_utc': iso(time.time())},
         indent=1))
+    if args.auto:
+        record_auto_spend(args.top_n)
     print(f"submitted {r['job_id']} to {server['name']}: {r['status']} at {r['stage']}")
     print(f"it runs on the server; check with: hypernym.py wait {r['job_id']}  (or hypernym.py help later)")
 
@@ -574,6 +614,69 @@ def pair_with_portal(portal: str, minutes: float) -> dict:
     sys.exit("sign-in was not completed in time; run login again")
 
 
+# ---------------------------------------------------------------- sending policy
+# What this person's computers may send (set on the portal's Sending tab; read with a device signature, cached here).
+#   off  — nothing leaves this computer for that repo: no analysis, and the status line stops asking the server
+#   ask  — every analysis is a dry run first and needs the person's explicit yes (the default; also without a portal)
+#   auto — the agent may submit on its own (analyze --auto), up to the daily credit limit; beyond it, it asks
+POLICY_FILE = HOME / 'sending_policy.json'
+AUTO_SPEND_FILE = HOME / 'auto_spend.json'
+POLICY_FRESH_SECONDS = 600
+
+
+def portal_of(servers: list):
+    for server in servers:
+        if 'portal' in server:
+            return server
+    return None
+
+
+def fetch_policy(servers: list):
+    """The person's policy from the portal (refreshes the cache), or None when no server was signed in via a portal."""
+    server = portal_of(servers)
+    if server is None:
+        return None
+    device_key, device = restoria_identity.load_device()
+    issued_at = str(int(time.time() * 1_000_000))
+    text = f"HYPERNYM-PORTAL-SENDING-POLICY-v1\ndevice={device}\nissued_at={issued_at}"
+    body = json.dumps({'device': device, 'issued_at': issued_at,
+                       'signature': restoria_identity.sign_text(device_key, text)}).encode()
+    policy = raw_json(server['portal'], 'POST', '/api/device/policy', body)
+    policy['fetched_at'] = time.time()
+    HOME.mkdir(parents=True, exist_ok=True)
+    POLICY_FILE.write_text(json.dumps(policy))
+    return policy
+
+
+def cached_policy():
+    if not POLICY_FILE.exists():
+        return None
+    return json.loads(POLICY_FILE.read_text())
+
+
+def sending_level(policy, repo_key_lower: str) -> str:
+    if policy is None:
+        return 'ask'
+    if repo_key_lower in policy['repos']:
+        return policy['repos'][repo_key_lower]
+    return policy['level']
+
+
+def auto_spent_today() -> int:
+    today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+    if not AUTO_SPEND_FILE.exists():
+        return 0
+    spend = json.loads(AUTO_SPEND_FILE.read_text())
+    if spend['date'] != today:
+        return 0
+    return spend['credits']
+
+
+def record_auto_spend(credits: int) -> None:
+    today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+    AUTO_SPEND_FILE.write_text(json.dumps({'date': today, 'credits': auto_spent_today() + credits}))
+
+
 def save_server(server: dict) -> None:
     config = {'servers': []}
     if CONFIG.exists():
@@ -613,6 +716,7 @@ def cmd_login(args, servers):
         server['device'] = paired['device']
         server['node_address'] = node
         server['expires_at'] = paired['expires_at']
+        server['portal'] = args.portal.rstrip('/')
         who = f"identity {paired['principal']}, "
     else:
         e = enroll(url, args.minutes)
@@ -757,6 +861,17 @@ def cmd_statuscache(args, servers):
     """Write ~/.hypernym/status/<owner__repo>.json for the status line (refreshed in the background)."""
     info = repo_info(args.dir)
     out = {'repo': info['key'], 'refreshed_at': time.time(), 'servers': []}
+    policy = cached_policy()
+    if portal_of(servers) is not None:
+        if policy is None or time.time() - policy['fetched_at'] > POLICY_FRESH_SECONDS:
+            try:
+                policy = fetch_policy(servers)
+            except (urllib.error.URLError, OSError):
+                pass  # keep the cached setting; a later refresh retries
+    if sending_level(policy, info['key_lower']) == 'off':
+        # Sending is off for this repo: the status line asks the server nothing.
+        servers = []
+        out['sending_off'] = True
     for server in servers:
         entry = {'name': server['name'], 'error': None, 'floats': 0, 'floats_done': 0, 'jobs': []}
         try:
@@ -812,6 +927,7 @@ def main() -> None:
     p.add_argument('--budget', type=int, default=3077)
     p.add_argument('--commit', default='')
     p.add_argument('--execute', action='store_true')
+    p.add_argument('--auto', action='store_true', help='submit without asking, only when sending is auto and under the daily limit')
     p = sub.add_parser('wait')
     p.add_argument('job_id')
     p.add_argument('--minutes', type=float, default=10)

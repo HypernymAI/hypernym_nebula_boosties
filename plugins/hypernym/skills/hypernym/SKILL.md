@@ -52,6 +52,12 @@ If a package exists, offer to load it.
    Show that to the user. A real run creates a float (paid compression) for every ranked file the
    server has not compressed before. Add `--execute` ONLY when the user explicitly approves this
    submission in their latest message; never on your own initiative, never to "test".
+   The person's **sending** setting (portal → Sending, printed by `help`) decides further:
+   - `off` for this repo: nothing is sent; the script refuses. Don't work around it.
+   - `ask` (the default): the rule above.
+   - `auto`: you may submit on your own with `--auto` (instead of `--execute`) when an analysis would clearly
+     help the task. The script enforces the person's daily credit limit and refuses beyond it; then show
+     the dry run and ask. Say that you submitted and why.
    It analyzes the newest commit that exists on GitHub (the server clones from there) and says so if
    the local HEAD is ahead. Private repos work if the user's Hypernym account has GitHub linked.
    If the server has its dry-run gate on, an executed job stops after ranking and `wait` prints the
