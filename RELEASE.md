@@ -83,5 +83,7 @@ Switch this Mac (owner's go; after the gates)
 
 Known, accepted
 - `plugins/nebula/shield/vendor_strata.py` keeps ClaudeStorm's class-10 regex byte-exact (parity proof).
-- nebula: macOS / Apple Silicon only (prebuilt native scorer); background auto-detect = Apple Terminal.
+- nebula: macOS 11+ (arm64 + x86_64) and Linux x86_64/aarch64 glibc 2.28+, one prebuilt CPU scorer per platform
+  (ctxshield-plugin/tools/build_native_all.sh, RELEASING.md); Windows = WSL. Background auto-detect = Apple Terminal;
+  elsewhere the logo is drawn opaque.
 - The internal scoring library inside nebula is still the python package `ctxshield` (not user-visible).

@@ -165,15 +165,16 @@ def main() -> None:
         return
     # 4-row logo at the LEFT (so its rows stay column-aligned whatever width the terminal gives 🛡); badge on row 2,
     # wordmark after repet on row 2 (S26h)
+    alpha, mode = brand['rest_alpha'], brand['mode']
     if brand['bg'] == 'auto':
         try:
             bg = background(db.parent / 'termbg.json')           # the REAL background of this tab (S26e)
-        except RuntimeError as e:                                # SHOWN, never replaced by a guessed colour
-            print(render(levels, brand['icons'] is True) + note + f"  \x1b[38;2;255;60;60m✖ logo background: {e}{RESET}")
-            return
+        except RuntimeError:                                     # unreadable (not Apple Terminal, Linux …): OPAQUE —
+            bg, alpha = (0, 0, 0), 1.0                           # at alpha 1 nothing is blended, no colour guessed
+            mode = 'gentle' if mode == 'cameo' else mode
     else:
         bg = tuple(brand['bg'])
-    rows, word = logo(time.time(), bg, brand['mode'], brand['rest_alpha'], brand['mark'])
+    rows, word = logo(time.time(), bg, mode, alpha, brand['mark'])
     # logo rows at the LEFT; the shield line (badge + wordmark after `repet`) rides the middle logo row
     k = (len(rows) - 1) // 2                                     # full 4 rows → 1 · mid 3 → 1 · compact 1 → 0
     lines = list(rows)

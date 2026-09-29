@@ -5,7 +5,8 @@ alpha-blended against what is actually behind it (terminals draw text opaque; th
 Apple Terminal only (TERM_PROGRAM == Apple_Terminal): walk up from this process to the first ancestor with a tty (Claude
 Code's), then AppleScript: the tab of Terminal whose tty is that one → `background color` (16-bit RGB) + profile name.
 Cached per tty in <cache> for MAX_AGE_S (the AppleScript round trip is ~0.75 s; the status line refreshes every 1 s).
-Anything else → RuntimeError with the reason (the badge SHOWS it; it never silently falls back to a guessed colour).
+Anything else → RuntimeError with the reason; the status line then draws the logo fully OPAQUE (alpha 1: nothing is
+blended, so no colour is ever guessed).
 NO .get(). Imports at top.
 """
 import json

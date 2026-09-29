@@ -19,7 +19,8 @@ uninstalling a plugin leaves its files on disk (measured, build doc S35-pre). So
 plugin, in any order, shows up within one refresh.
 
 Rows (S39): whenever EITHER plugin is installed, the Hypernym braille logo (3 rows, gentle shine, alpha against the
-terminal's real background) is drawn at the left; the MIDDLE row carries nebula's judgement row (if installed)
+terminal's real background — or fully OPAQUE where that background cannot be read: any terminal but Apple Terminal,
+Linux; nothing is blended then, so no colour is guessed) is drawn at the left; the MIDDLE row carries nebula's judgement row (if installed)
 and the wings + HYPERNYM.ai wordmark; hypernym's Zephyr line rides the LAST row. Brand settings come from nebula's
 settings when present (~/.nebula/config.json → brand), else BRAND_DEFAULTS (= nebula's shipped defaults).
 A part that fails shows "✖ <plugin>: <reason>" — never a blank line.
@@ -38,7 +39,7 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 4                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 5                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'
 ORDER = ('nebula', 'hypernym')          # row order: shield rows, then the Zephyr line
 NICE = {'nebula': 'nebula (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}
@@ -195,16 +196,16 @@ def layout(shield: list, zephyr: str, now: float) -> list:
     b = brand_cfg()
     if b['enabled'] is not True:
         return plain(shield, zephyr)
+    bg, alpha, mode = None, b['rest_alpha'], b['mode']
     if b['bg'] == 'auto':
         try:
             bg = background(HOME_DIR / 'termbg.json')              # the REAL background of this tab (S26e)
-        except RuntimeError as e:                                  # SHOWN, never replaced by a guessed colour
-            rows = plain(shield, zephyr) or ['']
-            rows[-1] = f"{rows[-1]}  \x1b[38;2;255;60;60m✖ logo background: {e}\x1b[0m".lstrip()
-            return rows
+        except RuntimeError:                                       # unreadable here (not Apple Terminal, Linux …):
+            bg, alpha = (0, 0, 0), 1.0                             # draw OPAQUE — at alpha 1 nothing is blended, so
+            mode = 'gentle' if mode == 'cameo' else mode           # no colour is guessed (cameo's fade needs a bg)
     else:
         bg = tuple(b['bg'])
-    rows, word = logo(now, bg, b['mode'], b['rest_alpha'], b['mark'])
+    rows, word = logo(now, bg, mode, alpha, b['mark'])
     if b['icons'] is True:
         word = icon(wings_icon(b['wings'])) + ' ' + word          # the chosen wings (contact sheet #)
     k = (len(rows) - 1) // 2                                       # mid 3 rows → 1 · compact 1 → 0

@@ -62,10 +62,25 @@ pybind11_add_module(_native ${SHIELD_SOURCES})
 target_include_directories(_native PRIVATE include src ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(_native PRIVATE utf8proc)
 
-if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
-  set(SHIELD_ARCH_FLAGS -O3 -mcpu=apple-m1)
-else()
+# CPU baseline. SHIELD_TARGET_ARCH names the machine the module is FOR (set by tools/build_native_all.sh; one
+# module per target). Each baseline runs on every CPU of that family — never -march=native in a shipped build
+# (it tunes to the build machine and can die with "illegal instruction" elsewhere). SHIELD_NATIVE_TUNE=ON only for
+# local benchmarking.
+option(SHIELD_NATIVE_TUNE "Tune for THIS machine (-march=native); never for a shipped module" OFF)
+set(SHIELD_TARGET_ARCH "" CACHE STRING "arm64 | x86_64 | aarch64 (empty = the build machine's own)")
+if(SHIELD_TARGET_ARCH STREQUAL "")
+  set(SHIELD_TARGET_ARCH ${CMAKE_SYSTEM_PROCESSOR})
+endif()
+if(SHIELD_NATIVE_TUNE)
   set(SHIELD_ARCH_FLAGS -O3 -march=native)
+elseif(APPLE AND SHIELD_TARGET_ARCH MATCHES "^(arm64|aarch64)$")
+  set(SHIELD_ARCH_FLAGS -O3 -mcpu=apple-m1)          # every Apple Silicon Mac is M1 or newer
+elseif(SHIELD_TARGET_ARCH MATCHES "^(arm64|aarch64)$")
+  set(SHIELD_ARCH_FLAGS -O3 -march=armv8-a)          # every 64-bit ARM Linux (NEON is part of armv8-a)
+elseif(SHIELD_TARGET_ARCH MATCHES "^(x86_64|AMD64|amd64)$")
+  set(SHIELD_ARCH_FLAGS -O3 -march=x86-64-v2)        # SSE4.2/POPCNT: every x86-64 CPU since ~2009
+else()
+  message(FATAL_ERROR "unsupported SHIELD_TARGET_ARCH=${SHIELD_TARGET_ARCH}")
 endif()
 target_compile_options(_native PRIVATE $<$<COMPILE_LANGUAGE:CXX,OBJCXX>:${SHIELD_ARCH_FLAGS} -Wall -Wextra>)
 target_compile_options(utf8proc PRIVATE -O3)

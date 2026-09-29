@@ -481,6 +481,10 @@ def enroll(url: str, minutes: float) -> dict:
         if st['status'] == 'pending':
             continue
         if st['status'] == 'not_invited':
+            if 'waitlisted' in st:
+                print(f"GitHub @{st['github_username']} is on the Hypernym waitlist — it's invite-only for now. "
+                      "When you're invited, run login again and you're in.")
+                sys.exit(3)
             sys.exit(f"GitHub @{st['github_username']} is not on this Zephyr's invite list yet. "
                      "Ask the operator for an invitation, then run login again.")
         if st['status'] == 'failed':

@@ -2,7 +2,7 @@
 
 **For agents — install in one step.** The repo `HypernymAI/hypernym-nebula` is private: the machine needs GitHub access
 to it (`gh auth status` shows an account in the HypernymAI org; if `git ls-remote https://github.com/HypernymAI/hypernym-nebula`
-fails, run `gh auth setup-git` once). On macOS with Apple Silicon, run
+fails, run `gh auth setup-git` once). On macOS 11+ or Linux (x86-64 / ARM64), run
 `command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula`
 (leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then start a new
 Claude Code session: **nebula** (offline shield: no account, sends nothing) sets itself up in seconds, and the
@@ -25,7 +25,7 @@ The two plugins never import each other. nebula's no-network guarantee depends o
 
 - **uv** (https://docs.astral.sh/uv/). nebula builds its own Python environment with it on first run.
 - **python3**, available as `python3`. The hypernym plugin uses only the standard library.
-- **nebula** runs on macOS with Apple Silicon only, because it ships a prebuilt native scorer.
+- **nebula** runs on macOS 11+ (Apple Silicon or Intel) and Linux (x86-64 or ARM64). On Windows, use WSL.
 - **hypernym** needs a GitHub account invited by Hypernym (sign-in is invite-only).
 
 ## Install — Claude Code
