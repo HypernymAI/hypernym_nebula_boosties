@@ -12,6 +12,15 @@ absolute path to this skill's directory:
 python3 <this skill's directory>/scripts/hypernym.py --dir "$PWD" <command>
 ```
 
+## "What does this do?" — `about`
+
+```bash
+python3 <skill dir>/scripts/hypernym.py about
+```
+
+Prints what the two plugins are (Nebula, the local shield; Hypernym, the Zephyr connector) and the install and
+update lines. Works before sign-in. Show it as-is.
+
 ## "hypernym help" — always start here
 
 ```bash

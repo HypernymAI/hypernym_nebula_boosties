@@ -26,6 +26,10 @@ RUN_TIMEOUT_S = 900
 
 DIR_PROP = {'type': 'string', 'description': 'Path of the git repo (default: the working directory).'}
 TOOLS = [
+    {'name': 'hypernym_about',
+     'description': "What the two plugins are (Nebula, the local shield; Hypernym, the Zephyr connector), plus the "
+                    "install and update lines. Use for \"what does this do?\".",
+     'inputSchema': {'type': 'object', 'properties': {}}},
     {'name': 'hypernym_help',
      'description': "Setup check and overview for this repo: sign-in on each server, this repo's floats and "
                     "repo-analyze jobs (downloads finished packages), and local packages with their drift.",
@@ -122,6 +126,8 @@ def login_status() -> tuple:
 
 
 def call_tool(name: str, arguments: dict) -> tuple:
+    if name == 'hypernym_about':
+        return run_cli(['about'])
     if name == 'hypernym_help':
         return run_cli(['--dir', _dir(arguments), 'help'])
     if name == 'hypernym_floats':

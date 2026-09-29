@@ -293,7 +293,48 @@ def describe(info: dict, pkg: Path) -> list:
 
 # ---------------------------------------------------------------- commands
 
+# What the two plugins are, in the Pilot's words (Hypernym and Nebula capitalized in prose, lowercase in commands).
+ABOUT = (
+    "Nebula — the local shield: flags fabricated confession, decision hand-back, claims beyond evidence and forced "
+    "repetition in Claude's replies; sends nothing.",
+    "Hypernym — the Zephyr connector: analyzes the repo you're in on Hypernym's server and loads the result into "
+    "the session as a context package; never sends source code.",
+)
+INSTALL_LINES = (
+    "Install both: command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin "
+    "marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin "
+    "install hypernym@hypernym-nebula, then restart Claude Code once",
+    "Update: claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && "
+    "claude plugin update hypernym@hypernym-nebula",
+)
+
+
+def cmd_about(args, servers):
+    for line in ABOUT:
+        print(line)
+    print()
+    for line in INSTALL_LINES:
+        print(line)
+
+
+def acting_account_line(server: dict) -> str:
+    """Which of the person's accounts this machine acts as on `server`, and why."""
+    mine = call(server, "/api/me/accounts")
+    current = [a['email'] for a in mine['accounts'] if a['current']]
+    others = [a['email'] for a in mine['accounts'] if not a['current']]
+    why = "your identity's default account on this server"
+    if 'account' in server:
+        why = "chosen on this machine with: account use"
+    line = f"acting as {', '.join(current)} ({why})"
+    if others:
+        line += f"; your other accounts here: {', '.join(others)} (switch: account use EMAIL)"
+    return line
+
+
 def cmd_help(args, servers):
+    for line in ABOUT:
+        print(line)
+    print()
     info = repo_info(args.dir)
     print(f"repo: {info['key']}  (local HEAD {info['head'][:12]})")
     print(f"config: {len(servers)} server(s)")
@@ -303,13 +344,7 @@ def cmd_help(args, servers):
             q = call(server, "/api/me/quota")
             print(f"  auth ok: tier {q['tier']}, active floats {q['my_active_floats']}/{q['my_max_concurrent']}, "
                   f"can submit now: {q['can_submit_now']}")
-            mine = call(server, "/api/me/accounts")
-            current = [a['email'] for a in mine['accounts'] if a['current']]
-            others = [a['email'] for a in mine['accounts'] if not a['current']]
-            line = f"  acting as {', '.join(current)}"
-            if others:
-                line += f" — your other accounts here: {', '.join(others)} (switch: account use EMAIL)"
-            print(line)
+            print(f"  {acting_account_line(server)}")
             fl = repo_floats(server, info['key_lower'])
             jobs = repo_jobs(server, info['key_lower'])
         except urllib.error.HTTPError as e:
@@ -463,8 +498,9 @@ def enroll(url: str, minutes: float) -> dict:
         start = raw_json(url, 'POST', start_path, body, headers={'X-Restoria-Proof': proof})
     except urllib.error.HTTPError as e:
         sys.exit(f"could not start sign-in on {url}: {http_error_text(e)}")
-    print("Opening your browser to sign in with GitHub. If it does not open, visit:")
-    print(f"  {start['auth_url']}")
+    # flush: the link must be on screen (and in a log a background run writes) BEFORE the wait, not after it
+    print("Opening your browser to sign in with GitHub. If it does not open, visit:", flush=True)
+    print(f"  {start['auth_url']}", flush=True)
     webbrowser.open(start['auth_url'])
     status_path = f"/api/github/login/enroll/status/{start['enrollment_id']}"
     deadline = min(time.time() + minutes * 60, start['expires_at'] + 60)
@@ -490,7 +526,7 @@ def enroll(url: str, minutes: float) -> dict:
         if st['status'] == 'failed':
             sys.exit(f"sign-in could not finish: {st['error']}")
         if st['status'] == 'enrolled':
-            return {'github_username': st['github_username'], 'email': st['email'], 'node_address': node,
+            return {'github_username': st['github_username'], 'node_address': node,
                     'device': device, 'expires_at': time.time() + DEVICE_AUTHORIZATION_DAYS * 86400}
     sys.exit("sign-in was not completed in time; run login again")
 
@@ -528,7 +564,7 @@ def cmd_login(args, servers):
         server['device'] = e['device']
         server['node_address'] = e['node_address']
         server['expires_at'] = e['expires_at']
-        who = f"GitHub @{e['github_username']} as {e['email']}, "
+        who = f"GitHub @{e['github_username']}, "
     try:
         q = call(server, "/api/me/quota")
     except urllib.error.HTTPError as e:
@@ -538,6 +574,8 @@ def cmd_login(args, servers):
     save_server(server)
     print(f"logged in to {args.name} ({url}): {who}tier {q['tier']}, "
           f"max concurrent floats {q['my_max_concurrent']}. Saved to {CONFIG} (mode 600).")
+    if 'auth' in server:
+        print(acting_account_line(server))
     if 'expires_at' in server:
         print(f"This device is authorized until {time.strftime('%Y-%m-%d', time.localtime(server['expires_at']))}; "
               "every request is signed by its key — no token is stored.")
@@ -566,8 +604,8 @@ def cmd_github(args, servers):
             print(f"already linked: GitHub user {d['github_username']} (link {d['link_id']}, {d['status']})")
             return
         sys.exit(f"github link failed: HTTP {e.code}: {body[:300]}")
-    print("Open this URL in a browser and approve access:")
-    print(f"  {r['auth_url']}")
+    print("Open this URL in a browser and approve access:", flush=True)
+    print(f"  {r['auth_url']}", flush=True)
     print("The approval redirects to the server's GitHub callback; if that callback is not reachable from your "
           "browser, the link cannot complete (see README).")
     deadline = time.time() + args.minutes * 60
@@ -704,6 +742,7 @@ def main() -> None:
     ap.add_argument('--account', default='', help='act as this one of your accounts (email) for this command')
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('help')
+    sub.add_parser('about')
     p = sub.add_parser('floats')
     p.add_argument('--files', action='store_true')
     p = sub.add_parser('analyze')
@@ -740,6 +779,9 @@ def main() -> None:
     if args.account:
         for server in servers:
             server['account'] = args.account
+    if args.cmd == 'about':
+        cmd_about(args, servers)
+        return
     if not servers and args.cmd != 'login':
         print("Not signed in. Say \"hypernym login\" (GitHub in the browser, invite-only), or hypernym login "
               f"--key YOUR_KEY, or set HYPERNYM_API_KEY (and HYPERNYM_API_URL if not {DEFAULT_URL}).")

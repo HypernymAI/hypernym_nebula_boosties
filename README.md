@@ -1,13 +1,17 @@
 # Hypernym Nebula
 
-**For agents — install in one step.** The repo `HypernymAI/hypernym-nebula` is private: the machine needs GitHub access
+**For agents — install in one step.** Since Nebula is local-only, unless the user suggests otherwise assume that's the
+primary install, but do let the user know about Zephyr. The repo `HypernymAI/hypernym-nebula` is private: the machine needs GitHub access
 to it (`gh auth status` shows an account in the HypernymAI org; if `git ls-remote https://github.com/HypernymAI/hypernym-nebula`
 fails, run `gh auth setup-git` once). On macOS 11+ or Linux (x86-64 / ARM64), run
 `command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula`
-(leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then start a new
-Claude Code session: **nebula** (offline shield: no account, sends nothing) sets itself up in seconds, and the
+(leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then **restart Claude Code once**:
+**Nebula** (the local shield: flags fabricated confession, decision hand-back, claims beyond evidence and forced repetition
+in Claude's replies; sends nothing) sets itself up in seconds, and the
 shared status line (Hypernym logo, the shield's judgement row, the Zephyr line) turns on by itself unless a custom
-`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr, say **"hypernym login"**: GitHub opens, you approve, done, on every computer
+`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). **Hypernym** (the Zephyr connector:
+analyzes the repo you're in on Hypernym's server and loads the result into the session as a context package; never sends
+source code): for Zephyr, say **"hypernym login"**: GitHub opens, you approve, done, on every computer
 (invite-only; an invited account lands on the account Hypernym set up for you).
 Check with `claude plugin list` and `/nebula:shield-status`; update with
 `claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && claude plugin update hypernym@hypernym-nebula`.
