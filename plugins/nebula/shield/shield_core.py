@@ -68,7 +68,7 @@ class DecisionLog:
         self.retention = retention                   # privacy: the decision log keeps text only as the user allows
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        c = sqlite3.connect(str(self.db_path))
+        c = sqlite3.connect(str(self.db_path), timeout=120.0)
         try:
             c.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, applied_at REAL NOT NULL)")
             row = c.execute("SELECT MAX(version) FROM schema_version").fetchone()
@@ -82,7 +82,7 @@ class DecisionLog:
             c.close()
 
     def blocks_so_far(self, session_id: str, pilot_sha: str) -> int:
-        c = sqlite3.connect(str(self.db_path))
+        c = sqlite3.connect(str(self.db_path), timeout=120.0)
         try:
             return c.execute("SELECT COUNT(*) FROM decisions WHERE session_id=? AND pilot_sha=? AND "
                              "event='stop' AND decision='block'", (session_id, pilot_sha)).fetchone()[0]
@@ -93,7 +93,7 @@ class DecisionLog:
         return t if self.retention == 'full' else (t[:300] if self.retention == 'excerpt' else '')
 
     def put(self, row: Dict) -> None:
-        c = sqlite3.connect(str(self.db_path))
+        c = sqlite3.connect(str(self.db_path), timeout=120.0)
         try:
             c.execute("INSERT INTO decisions (event, session_id, pilot_sha, attempt, text_sha, text, scores_json, "
                       "fired_json, decision, config_sha, ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",

@@ -39,7 +39,7 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 9                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 10                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'
 ORDER = ('nebula', 'hypernym')          # row order: shield rows, then the Zephyr line
 NICE = {'nebula': 'nebula (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}
@@ -52,7 +52,7 @@ INTRO = HOME_DIR / 'intro.json'                # first sight after install: the 
 INTRO_S = 60             # written by `remove`: SessionStart will not re-add the status line
 TIMEOUT_S = 4.0
 SHARED = ('nebula_statusline.py', 'brand.py', 'termbg.py', 'brand_assets/wings_candidates.json')
-BRAND_DEFAULTS = {'enabled': True, 'bg': 'auto', 'icons': True, 'mark': 'mid', 'mode': 'gentle', 'rest_alpha': 0.1,
+BRAND_DEFAULTS = {'enabled': True, 'bg': 'auto', 'icons': True, 'mark': 'mid', 'mode': 'gentle', 'rest_alpha': 0.55,
                   'wings': 76}
 SHIELD_CONFIG = Path.home() / '.nebula' / 'config.json'
 RECOGNIZED = ('.hypernym-nebula/bin/statusline',  # ours

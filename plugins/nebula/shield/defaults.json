@@ -5,7 +5,7 @@
   "icons": true,
   "mark": "mid",
   "mode": "gentle",
-  "rest_alpha": 0.1,
+  "rest_alpha": 0.55,
   "wings": 76
  },
  "combined_dir": "models/combined_v1",

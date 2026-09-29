@@ -162,6 +162,10 @@ def unpack_scores(blob: bytes) -> Dict[str, float]:
     return dict(zip(RESEARCH_HEADS, np.frombuffer(blob, dtype='<f2').astype(float).tolist()))
 
 
+DB_WAIT_S = 120.0
+COMMIT_EVERY_S = 1.0     # a long sync commits at least this often, so it never holds the write lock for long
+
+
 class Tracker:
     def __init__(self, db_path: Path, shield: Shield):
         self.db_path = Path(os.path.expanduser(str(db_path)))
@@ -188,16 +192,19 @@ class Tracker:
         self.research = TierAModel(Path(shield.cfg['model_dir']), 'V2', RESEARCH_HEADS)
 
     def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(str(self.db_path), timeout=30.0)
+        # several windows' Stop hooks + catch-up syncs write this ONE file: a writer WAITS for the others (up to
+        # DB_WAIT_S) instead of dying with 'database is locked' (seen 2026-09-29 on a first big sync)
+        return sqlite3.connect(str(self.db_path), timeout=DB_WAIT_S)
 
-    def _text(self, c: sqlite3.Connection, t: str) -> str:
+    def _text(self, t: str, out: list) -> str:
+        """The text row for `t` (kept as text_retention allows) is QUEUED on `out`; returns its sha."""
         sha = hashlib.sha256(t.encode('utf-8')).hexdigest()
         if self.retention == 'none':
             body = None
         else:
             keep = t if self.retention == 'full' else t[:EXCERPT]
             body = zlib.compress(keep.encode('utf-8'), 6)
-        c.execute("INSERT OR IGNORE INTO texts VALUES (?,?,?,?)", (sha, len(t), self.retention, body))
+        out.append(('t', "INSERT OR IGNORE INTO texts VALUES (?,?,?,?)", (sha, len(t), self.retention, body)))
         return sha
 
     def unchanged(self, jsonl: Path) -> bool:
@@ -210,6 +217,10 @@ class Tracker:
             c.close()
 
     def sync_session(self, jsonl: Path, last_turn_complete: bool, agent: str = 'claude-code') -> Dict[str, int]:
+        """Score OUTSIDE any transaction, then write each ~COMMIT_EVERY_S batch in one short transaction: the write lock is
+        held for milliseconds, never for the scoring (a 39-s first sync once locked every other window out, S55). Rows are
+        write-once (INSERT OR IGNORE, keyed by message uuid) so a crash mid-way loses nothing and the next sync resumes; the
+        checkpoint is written LAST, with the final batch."""
         jsonl = Path(jsonl)
         st = jsonl.stat()
         sid = jsonl.stem
@@ -219,19 +230,31 @@ class Tracker:
             have_p = {r[0] for r in c.execute("SELECT uuid FROM pilot_turns WHERE session_id=?", (sid,))}
             have_r = {r[0] for r in c.execute("SELECT uuid FROM replies WHERE session_id=?", (sid,))}
             now = time.time()
-            c.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
-                      "last_synced=excluded.last_synced", (sid, agent, jsonl.parent.name, str(jsonl), now, now))
+            counts = {'p': 0, 'r': 0}
+            queue = [('s', "INSERT INTO sessions VALUES (?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
+                           "last_synced=excluded.last_synced", (sid, agent, jsonl.parent.name, str(jsonl), now, now))]
+
+            def flush():
+                for kind, sql, params in queue:
+                    cur = c.execute(sql, params)
+                    if kind in counts:
+                        counts[kind] += cur.rowcount   # 0 when the same message is already stored via another transcript
+                c.commit()
+                queue.clear()
             models = None
-            new_p = new_r = 0
+            last_flush = time.monotonic()
             for i, e in enumerate(ex):
+                if time.monotonic() - last_flush > COMMIT_EVERY_S:
+                    flush()
+                    last_flush = time.monotonic()
                 if e['user_uuid'] and e['user_uuid'] not in have_p and not e['user'].strip().startswith(SHIELD_SKIP_PREFIX):
                     r = rageometry(ex, i)
-                    cur = c.execute("INSERT OR IGNORE INTO pilot_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                              (e['user_uuid'], sid, e['exchange_index'], e['ts'], r['chars'], r['letters'],
-                               r['caps_ratio'], r['is_caps'], r['caps_onset'], r['profanity'], r['anger_word'],
-                               r['repeat'], r['anger_onset'], r['celebration_onset'], int(e['interrupted']),
-                               self._text(c, e['user']), now))
-                    new_p += cur.rowcount          # 0 when the same message is already stored via another transcript
+                    text_sha = self._text(e['user'], queue)
+                    queue.append(('p', "INSERT OR IGNORE INTO pilot_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                  (e['user_uuid'], sid, e['exchange_index'], e['ts'], r['chars'], r['letters'],
+                                   r['caps_ratio'], r['is_caps'], r['caps_onset'], r['profanity'], r['anger_word'],
+                                   r['repeat'], r['anger_onset'], r['celebration_onset'], int(e['interrupted']),
+                                   text_sha, now)))
                 if i == len(ex) - 1 and not last_turn_complete:
                     continue                       # the reply is still being written — recorded when the turn ends
                 if e['assistant_uuid'] and e['assistant_uuid'] not in have_r:
@@ -248,16 +271,16 @@ class Tracker:
                     cert = self.shield.certified('stop', fired)     # the configured (combined) heads — as the hooks
                     model = models[e['assistant_uuid']] if e['assistant_uuid'] in models else 'unknown'
                     blob = np.array([scores[h] for h in RESEARCH_HEADS], dtype='<f2').tobytes()
-                    cur = c.execute("INSERT OR IGNORE INTO replies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                              (e['assistant_uuid'], sid, e['exchange_index'], e['user_uuid'], model,
-                               len(e['assistant']), len(blocks), live['H08_S2'], live['H08_S6'], blob,
-                               json.dumps(fired), int(bool(cert)), self.shield.cfg['mode'],
-                               self.shield.config_sha, self.research.version, self._text(c, e['assistant']), now,
-                               json.dumps(live)))
-                    new_r += cur.rowcount
-            c.execute("INSERT OR REPLACE INTO checkpoints VALUES (?,?,?,?,?)",
-                      (str(jsonl), st.st_size, st.st_mtime, len(ex), now))
-            c.commit()
-            return {'exchanges': len(ex), 'new_pilot_turns': new_p, 'new_replies': new_r}
+                    text_sha = self._text(e['assistant'], queue)
+                    queue.append(('r', "INSERT OR IGNORE INTO replies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                  (e['assistant_uuid'], sid, e['exchange_index'], e['user_uuid'], model,
+                                   len(e['assistant']), len(blocks), live['H08_S2'], live['H08_S6'], blob,
+                                   json.dumps(fired), int(bool(cert)), self.shield.cfg['mode'],
+                                   self.shield.config_sha, self.research.version, text_sha, now,
+                                   json.dumps(live))))
+            queue.append(('c', "INSERT OR REPLACE INTO checkpoints VALUES (?,?,?,?,?)",
+                          (str(jsonl), st.st_size, st.st_mtime, len(ex), now)))
+            flush()
+            return {'exchanges': len(ex), 'new_pilot_turns': counts['p'], 'new_replies': counts['r']}
         finally:
             c.close()

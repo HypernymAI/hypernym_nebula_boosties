@@ -29,7 +29,7 @@ def main() -> None:
         'show': True,                     # one-line judgement note under each reply
         'text_retention': 'none',         # PRIVACY DEFAULT: store scores + numbers, not the transcript text
         'exclude_projects': [],
-        'brand': {'enabled': True, 'bg': 'auto', 'rest_alpha': 0.10, 'mark': 'mid', 'mode': 'gentle',
+        'brand': {'enabled': True, 'bg': 'auto', 'rest_alpha': 0.55, 'mark': 'mid', 'mode': 'gentle',
                   'icons': True, 'wings': 76},   # wings = contact-sheet number (pilot: #76)
         # ── fixed by the release ──
         'db_path': '~/.nebula/nebula.db',
