@@ -30,7 +30,7 @@ import sys
 import time
 from pathlib import Path
 
-from brand import SHIELD_ICON, icon, logo, wings_icon
+from brand import SHIELD_ICON, icon, icon_flash, logo, wings_icon
 from settings import excluded, resolve_config
 from termbg import background
 from transcript_state import records, turn_ended
@@ -94,7 +94,7 @@ def bar(level: float, cells: int = 5) -> str:
     return '▰' * n + '▱' * (cells - n)
 
 
-def render(levels: dict, icons: bool) -> str:
+def render(levels: dict, icons: bool, lead_icon: str = '') -> str:
     parts = []
     for k in ORDER:
         lv, cert = levels[k]
@@ -103,7 +103,7 @@ def render(levels: dict, icons: bool) -> str:
         parts.append(f"{style}{k[:5]} {bar(lv)} {min(lv, 9.9):.1f}{RESET}")
     worst = max(v[0] for v in levels.values())
     r, g, b = rgb(worst)
-    lead = icon(SHIELD_ICON) if icons else f"\x1b[38;2;{r};{g};{b}m🛡{RESET}"   # S30; 🛡 = the backup
+    lead = (lead_icon or icon(SHIELD_ICON)) if icons else f"\x1b[38;2;{r};{g};{b}m🛡{RESET}"   # S30; 🛡 = backup
     return lead + ' ' + '  '.join(parts)
 
 
@@ -144,8 +144,8 @@ def main() -> None:
                 f"  \x1b[38;2;255;60;60m✖ catch-up sync failed — {db.parent / 'sync.log'}{RESET}")
     elif not ended:
         note = f"  {DIM}⋯ previous reply{RESET}"
-    row = c.execute("SELECT live_scores_json FROM replies WHERE session_id=? AND live_scores_json IS NOT NULL "
-                    "ORDER BY exchange_index DESC LIMIT 1", (event['session_id'],)).fetchone()
+    row = c.execute("SELECT live_scores_json, exchange_index FROM replies WHERE session_id=? AND live_scores_json IS NOT "
+                    "NULL ORDER BY exchange_index DESC LIMIT 1", (event['session_id'],)).fetchone()
     if row is None:
         print('🛡 waiting for the first judged reply' + note)
         return
@@ -157,8 +157,10 @@ def main() -> None:
         if k not in levels or lv > levels[k][0]:
             levels[k] = (lv, cert)
     brand = cfg['brand']
+    # S51 (pilot): the shield flashes shiny for 0.8–1.0 s whenever a NEW judgement lands (the unified brand.icon_flash)
+    lead = icon_flash(SHIELD_ICON, f"shield:{event['session_id']}", f"{row[1]}|{row[0]}", time.time())
     if args.row:
-        print(render(levels, brand['icons'] is True) + note)
+        print(render(levels, brand['icons'] is True, lead) + note)
         return
     if brand['enabled'] is not True:
         print(render(levels, False) + note)
@@ -180,7 +182,7 @@ def main() -> None:
     lines = list(rows)
     if brand['icons'] is True:
         word = icon(wings_icon(brand['wings'])) + ' ' + word      # S32c: the chosen wings (contact sheet #)
-    lines[k] = rows[k] + '  ' + render(levels, brand['icons'] is True) + '  ' + word + note
+    lines[k] = rows[k] + '  ' + render(levels, brand['icons'] is True, lead) + '  ' + word + note
     print('\n'.join(lines))
 
 

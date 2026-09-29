@@ -39,7 +39,7 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 5                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 6                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'
 ORDER = ('nebula', 'hypernym')          # row order: shield rows, then the Zephyr line
 NICE = {'nebula': 'nebula (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}

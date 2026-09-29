@@ -2,11 +2,14 @@
 """
 Claude Code STATUS LINE segment: Hypernym state for the repo this session is in.
 
-stdin: the status-line JSON (workspace.current_dir / cwd). Reads ~/.hypernym/status/<owner__repo>.json, written by
+stdin: the status-line JSON (session_id, workspace.current_dir / cwd). Reads ~/.hypernym/status/<owner__repo>.json, written by
 `hypernym.py statuscache` through the API with the user's key. Never calls the network itself: if the cache is older
 than REFRESH_S and no refresh is in flight, it starts one detached and shows the cached line meanwhile.
 
-    echo '{"cwd": "…"}' | python3 statusline.py
+    echo '{"session_id": "s1", "cwd": "…"}' | python3 statusline.py
+
+The Zephyr icon flashes (brand.icon_flash, shared with nebula) for 2.4–2.9 s whenever the Zephyr-side data behind
+the line changes — jobs, stages, floats, packages, errors — per Claude Code window (key zephyr:<session_id>).
 NO .get().
 """
 import json
@@ -16,6 +19,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from brand import ZEPHYR_ICON, icon_flash
 
 HERE = Path(__file__).resolve().parent
 STATUS = Path.home() / '.hypernym' / 'status'
@@ -59,7 +64,13 @@ def signed_in() -> bool:
     return len(json.loads(CONFIG.read_text())['servers']) > 0
 
 
-def render(c: dict, stale: bool) -> str:
+def zephyr_signature(c: dict) -> str:
+    """Everything Zephyr-side the line shows, and nothing else (not refreshed_at): a change here is an update."""
+    return json.dumps({'servers': c['servers'], 'packages': c['packages'], 'newest_package': c['newest_package']},
+                      sort_keys=True)
+
+
+def render(c: dict, stale: bool, icon: str) -> str:
     parts = []
     for s in c['servers']:
         if s['error'] == 'HTTP 401':
@@ -96,7 +107,7 @@ def render(c: dict, stale: bool) -> str:
     tail = ''
     if stale:
         tail = f" {DIM}⟳{RESET}"
-    return f"{CLOUD} " + '  '.join(parts) + f"  {pkg}{tail}"
+    return f"{icon} " + '  '.join(parts) + f"  {pkg}{tail}"
 
 
 def main() -> None:
@@ -124,7 +135,9 @@ def main() -> None:
     if not cache.exists():
         print(f"{CLOUD} {GREY}hypernym: loading {key}…{RESET}")
         return
-    print(render(json.loads(cache.read_text()), stale))
+    c = json.loads(cache.read_text())
+    icon = icon_flash(ZEPHYR_ICON, f"zephyr:{event['session_id']}", zephyr_signature(c), time.time())
+    print(render(c, stale, icon))
 
 
 if __name__ == '__main__':

@@ -14,12 +14,16 @@ and the wordmark). 'always' mode = a continuous LOOP_S shiny loop (preview). Hid
 'gentle' mode (pilot, S26d): the logo rests STILL in its true colours; one shiny flash (FLASH_S) every 10–15 min at a
 deterministic random time (GENTLE_SLOT_S slots, start jittered by < GENTLE_JITTER_S → consecutive flashes 600–900 s
 apart); 1 flash in DOUBLE_ONE_IN is a DOUBLE flash (two sweeps back to back).
-Pure functions of (now, bg, mode) — no I/O. NO .get().
+Pure functions of (now, bg, mode) — no I/O — EXCEPT icon_flash (below), which keeps one tiny state file per icon key.
+UPDATE FLASH (pilot, S51): any braille icon (any width, any number of rows) flashes shiny when the data behind it
+changes: a random 2.4–2.9 s = 3 status-line frames at Claude Code's 1-per-second redraw, the glint crossing the icon: icon_flash(mark, key, signature, now). NO .get().
 """
 import colorsys
 import json
 import hashlib
 import math
+import os
+import random
 from pathlib import Path
 from typing import List, Tuple
 
@@ -193,12 +197,13 @@ def _blend(c: Tuple[int, int, int], d: Tuple[int, int, int], t: float) -> Tuple[
     return tuple(int(round(a + (b - a) * t)) for a, b in zip(c, d))
 
 
-def _holo(c: Tuple[int, int, int], pos: float, row: int, p: float) -> Tuple[int, int, int]:
-    """Shiny-card foil: hue rotates with the sweep, then a white glint where the (slanted) sweep crosses this glyph."""
+def _holo(c: Tuple[int, int, int], pos: float, row: int, p: float, width: int = SWEEP_W) -> Tuple[int, int, int]:
+    """Shiny-card foil: hue rotates with the sweep, then a white glint where the (slanted) sweep crosses this glyph.
+    `width` = how many cells the glint travels across (the logo + wordmark by default; an icon's own width)."""
     hh, ll, ss = colorsys.rgb_to_hls(*(x / 255 for x in c))
     hh = (hh + 0.35 * math.sin(2 * math.pi * (p * 1.5 + pos * 0.12 + row * 0.08))) % 1.0
     rr, gg, bb = colorsys.hls_to_rgb(hh, min(0.85, ll * 1.05), min(1.0, ss * 1.2))
-    sweep = -3 + p * (SWEEP_W + 6) - row * 0.6                 # slanted glint travels past both edges
+    sweep = -3 + p * (width + 6) - row * 0.6                   # slanted glint travels past both edges
     glint = math.exp(-((pos - sweep) ** 2) / 1.6)
     return _blend((int(rr * 255), int(gg * 255), int(bb * 255)), (255, 255, 255), 0.75 * glint)
 
@@ -251,6 +256,58 @@ def logo(now: float, bg: Tuple[int, int, int], mode: str, rest_alpha: float, mar
 def icon(mark) -> str:
     """A 1-row icon (SHIELD_ICON / ZEPHYR_ICON) in its own colours, always opaque (S30)."""
     return ''.join(ch if c is None else f'\x1b[38;2;{c[0]};{c[1]};{c[2]}m{ch}{RESET}' for ch, c in mark[0])
+
+
+# ------------------------------------------------------------------------------------------------ update flash (S51)
+FLASH_DIR = Path.home() / '.hypernym-nebula' / 'flash'
+FLASH_MIN_S, FLASH_MAX_S = 2.4, 2.9                           # > 2 s and < 3 s → exactly 3 frames at 1 fps (pilot: '1')
+
+
+def icon_rows(mark, p=None) -> List[str]:
+    """ANY braille icon mark (tuple of rows of (char, rgb|None)), one styled string per row. p None = its own colours,
+    opaque (= icon() for a 1-row mark); p in 0..1 = the shiny frame at that point of the sweep: the logo's holographic
+    foil + a slanted white glint travelling across the icon's OWN width, so it fits any size."""
+    width = max(len(r) for r in mark)
+    out = []
+    for r, row in enumerate(mark):
+        cells = []
+        for i, (ch, c) in enumerate(row):
+            if c is None:
+                cells.append(ch)
+            elif p is None:
+                cells.append(f'\x1b[38;2;{c[0]};{c[1]};{c[2]}m{ch}{RESET}')
+            else:
+                rr, gg, bb = _holo(c, i, r, p, width)
+                cells.append(f'\x1b[38;2;{rr};{gg};{bb}m{ch}{RESET}')   # colour only: bold braille can
+        out.append(''.join(cells))                                     # fall back to a font drawing ALL 8 dots
+    return out
+
+
+def flash_progress(key: str, signature: str, now: float, state_dir: Path = FLASH_DIR):
+    """Sweep progress (0..1) while `key`'s update flash runs, else None. A flash starts when `signature` (whatever means
+    'the data behind this icon changed') differs from the last one seen for `key`, and lasts a random FLASH_MIN_S..
+    FLASH_MAX_S. The first sighting of a key only records it (no flash when a window opens). State: one small JSON per
+    key in state_dir holding a HASH of the signature (never its content), the start time and the duration."""
+    kid = hashlib.sha256(key.encode()).hexdigest()[:24]
+    sig = hashlib.sha256(signature.encode()).hexdigest()
+    f = state_dir / f'{kid}.json'
+    st = json.loads(f.read_text()) if f.exists() else None
+    if st is None or st['sig'] != sig:
+        st = {'sig': sig, 'at': now if st is not None else 0.0, 'dur': random.uniform(FLASH_MIN_S, FLASH_MAX_S)}
+        state_dir.mkdir(parents=True, exist_ok=True)
+        tmp = state_dir / f'{kid}.{os.getpid()}.tmp'
+        tmp.write_text(json.dumps(st))
+        tmp.replace(f)
+    t = now - st['at']
+    return (0.3 + 0.45 * t / st['dur']) if 0.0 <= t < st['dur'] else None   # the glint enters left, leaves right
+
+
+def icon_flash(mark, key: str, signature: str, now: float, state_dir: Path = FLASH_DIR) -> str:
+    """The unified 'this just updated' flash for ANY icon: its rows (joined by newline for a multi-row mark), shiny
+    while `key`'s flash runs (see flash_progress), its own colours otherwise. The status line repaints at most once a
+    second at idle (Claude Code's minimum refreshInterval), more often while replies stream (300 ms debounce) — so the
+    flash is 3 frames at idle (the glint visibly crossing) and a smoother sweep when the bar repaints faster."""
+    return '\n'.join(icon_rows(mark, flash_progress(key, signature, now, state_dir)))
 
 
 WINGS_CANDIDATES = Path(__file__).resolve().parent / 'brand_assets' / 'wings_candidates.json'
