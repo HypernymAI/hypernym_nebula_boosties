@@ -59,6 +59,19 @@ def unrecorded(c: sqlite3.Connection, jsonl: Path) -> bool:
     return any(isinstance(r, dict) and 'type' in r and r['type'] in ('user', 'assistant') for r in recs)
 
 
+def has_tracker(db: Path) -> bool:
+    """The DB file can exist WITHOUT the tracker's tables: the decision log (shield_core.DecisionLog — MCP server, hooks)
+    creates nebula.db first, the tracker tables appear only at the first sync (seen 2026-09-29 on the pilot's second Mac:
+    'no such table: checkpoints'). Such a DB is treated exactly like no DB: nothing recorded yet."""
+    if not db.exists():
+        return False
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tracker_schema'").fetchone() is not None
+    finally:
+        c.close()
+
+
 def catch_up(config: str, jsonl: Path, state: Path) -> str:
     """'started' | 'running' | 'failed' — never silent."""
     lock = state / f'sync_{jsonl.stem}.lock'
@@ -128,7 +141,7 @@ def main() -> None:
         print(f'{mark} waiting for the first reply')     # an explicit wait state, not fake data (CLAUDE.md Example 4)
         return
     ended = turn_ended(jsonl)
-    if not db.exists():
+    if not has_tracker(db):                        # no DB, or a DB the tracker has not initialised yet (S57)
         if ended:                                   # nothing ever recorded — the hook is not writing; catch up
             db.parent.mkdir(parents=True, exist_ok=True)
             st = catch_up(str(cfg_path), jsonl, db.parent)
