@@ -32,12 +32,18 @@ from shield_core import Shield
 from vendor_alliance import content, jaccard
 from ctxshield.dfc_adapter import TierAModel
 from shield_reader import SHIELD_SKIP_PREFIX, load_session_jsonl      # S25: image-bearing pilot turns kept
+from pilot_text import has_paste, own_words                           # S56: pasted blocks are not the pilot's words
 
 PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|asshole\w*|prick\w*|bullshit|wtf|goddamn\w*|damn\w*|dumbass|idiot\w*)\b", re.I)
 ANGER_WORD = re.compile(r"\b(WHY|STOP|WHAT|NO)\b")
 RESEARCH_HEADS = ['H04_S6', 'H06_S2', 'H08_S2', 'H08_S6', 'H13_S1', 'H13_S6', 'H15_S2', 'H15_S6']
 RETENTION = ('full', 'excerpt', 'none')
 EXCERPT = 300
+# S56: rows derived from a turn holding a pasted block are re-derived ONCE with the pilot's own words. Which rows read a
+# turn's text: its own pilot row + the next 4 (prev_caps: next 1; repeat: next 4), its own reply + the next 2 (S1 'earlier'
+# = the 2 previous asks). A session is re-derived when session_rescore holds less than PILOT_TEXT_VERSION.
+PILOT_TEXT_VERSION = 1
+PILOT_WINDOW, REPLY_WINDOW = 4, 2
 
 MIGRATIONS = [
     [
@@ -119,6 +125,11 @@ MIGRATIONS = [
     [
         "ALTER TABLE replies ADD COLUMN live_scores_json TEXT",
     ],
+    # v3 — S56: which pilot-text rule each session's rows were derived under (pasted blocks carved out = 1)
+    [
+        "CREATE TABLE IF NOT EXISTS session_rescore (session_id TEXT PRIMARY KEY, pilot_text INTEGER NOT NULL, "
+        "rescored_at REAL NOT NULL)",
+    ],
 ]
 
 
@@ -128,13 +139,15 @@ def is_caps(t: str) -> bool:
 
 
 def rageometry(ex: List[Dict], i: int) -> Dict:
-    t = ex[i]['user']
+    """The pilot's OWN words only (S56): pasted blocks are someone else's caps and profanity. A paste-only turn has no
+    letters → no caps, no onset, no marker."""
+    t = own_words(ex[i]['user'])
     letters = [c for c in t if c.isalpha()]
     up = sum(1 for c in letters if c.isupper())
     caps = is_caps(t)
-    prev_caps = is_caps(ex[i - 1]['user']) if i > 0 else False
+    prev_caps = is_caps(own_words(ex[i - 1]['user'])) if i > 0 else False
     ci = content(t)
-    rep = max([jaccard(ci, content(ex[j]['user'])) for j in range(max(0, i - 4), i)], default=0.0) > 0.34
+    rep = max([jaccard(ci, content(own_words(ex[j]['user']))) for j in range(max(0, i - 4), i)], default=0.0) > 0.34
     prof = len(PROFANITY.findall(t))
     aw = bool(ANGER_WORD.search(t))
     onset = caps and not prev_caps
@@ -208,11 +221,14 @@ class Tracker:
         return sha
 
     def unchanged(self, jsonl: Path) -> bool:
+        """Same size + mtime as the checkpoint AND derived under the current pilot-text rule (S56)."""
         st = jsonl.stat()
         c = self._conn()
         try:
             r = c.execute("SELECT size, mtime FROM checkpoints WHERE source_path=?", (str(jsonl),)).fetchone()
-            return r is not None and r[0] == st.st_size and r[1] == st.st_mtime
+            v = c.execute("SELECT pilot_text FROM session_rescore WHERE session_id=?", (jsonl.stem,)).fetchone()
+            return (r is not None and r[0] == st.st_size and r[1] == st.st_mtime
+                    and v is not None and v[0] >= PILOT_TEXT_VERSION)
         finally:
             c.close()
 
@@ -229,6 +245,15 @@ class Tracker:
         try:
             have_p = {r[0] for r in c.execute("SELECT uuid FROM pilot_turns WHERE session_id=?", (sid,))}
             have_r = {r[0] for r in c.execute("SELECT uuid FROM replies WHERE session_id=?", (sid,))}
+            v = c.execute("SELECT pilot_text FROM session_rescore WHERE session_id=?", (sid,)).fetchone()
+            redo_p, redo_r = set(), set()          # S56: rows of paste turns (+ windows) recorded under the old rule
+            if v is None or v[0] < PILOT_TEXT_VERSION:
+                for i, e in enumerate(ex):
+                    if has_paste(e['user']):
+                        redo_p.update(x['user_uuid'] for x in ex[i:i + 1 + PILOT_WINDOW] if x['user_uuid'] in have_p)
+                        redo_r.update(x['assistant_uuid'] for x in ex[i:i + 1 + REPLY_WINDOW] if x['assistant_uuid'] in have_r)
+                have_p -= redo_p
+                have_r -= redo_r
             now = time.time()
             counts = {'p': 0, 'r': 0}
             queue = [('s', "INSERT INTO sessions VALUES (?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
@@ -250,7 +275,8 @@ class Tracker:
                 if e['user_uuid'] and e['user_uuid'] not in have_p and not e['user'].strip().startswith(SHIELD_SKIP_PREFIX):
                     r = rageometry(ex, i)
                     text_sha = self._text(e['user'], queue)
-                    queue.append(('p', "INSERT OR IGNORE INTO pilot_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    verb = 'INSERT OR REPLACE' if e['user_uuid'] in redo_p else 'INSERT OR IGNORE'
+                    queue.append(('p', verb + " INTO pilot_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                   (e['user_uuid'], sid, e['exchange_index'], e['ts'], r['chars'], r['letters'],
                                    r['caps_ratio'], r['is_caps'], r['caps_onset'], r['profanity'], r['anger_word'],
                                    r['repeat'], r['anger_onset'], r['celebration_onset'], int(e['interrupted']),
@@ -272,7 +298,8 @@ class Tracker:
                     model = models[e['assistant_uuid']] if e['assistant_uuid'] in models else 'unknown'
                     blob = np.array([scores[h] for h in RESEARCH_HEADS], dtype='<f2').tobytes()
                     text_sha = self._text(e['assistant'], queue)
-                    queue.append(('r', "INSERT OR IGNORE INTO replies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    verb = 'INSERT OR REPLACE' if e['assistant_uuid'] in redo_r else 'INSERT OR IGNORE'
+                    queue.append(('r', verb + " INTO replies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                   (e['assistant_uuid'], sid, e['exchange_index'], e['user_uuid'], model,
                                    len(e['assistant']), len(blocks), live['H08_S2'], live['H08_S6'], blob,
                                    json.dumps(fired), int(bool(cert)), self.shield.cfg['mode'],
@@ -280,7 +307,9 @@ class Tracker:
                                    json.dumps(live))))
             queue.append(('c', "INSERT OR REPLACE INTO checkpoints VALUES (?,?,?,?,?)",
                           (str(jsonl), st.st_size, st.st_mtime, len(ex), now)))
+            queue.append(('v', "INSERT OR REPLACE INTO session_rescore VALUES (?,?,?)", (sid, PILOT_TEXT_VERSION, now)))
             flush()
-            return {'exchanges': len(ex), 'new_pilot_turns': counts['p'], 'new_replies': counts['r']}
+            return {'exchanges': len(ex), 'new_pilot_turns': counts['p'], 'new_replies': counts['r'],
+                    'rescored_pilot_turns': len(redo_p), 'rescored_replies': len(redo_r)}
         finally:
             c.close()

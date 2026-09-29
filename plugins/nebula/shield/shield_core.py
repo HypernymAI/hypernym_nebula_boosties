@@ -29,6 +29,7 @@ sys.path.insert(0, str(REPO / 'ctxshield'))
 from ctxshield import shape                                                   # noqa: E402
 from ctxshield.dfc_adapter import TierAModel                                  # noqa: E402
 from combined_model import CombinedModel                                      # noqa: E402
+from pilot_text import own_words                                              # noqa: E402  (S56)
 from shield_reader import SHIELD_SKIP_PREFIX, load_session_jsonl             # noqa: E402  (S25)
 from vendor_codebook import CLASSES                                 # noqa: E402
 
@@ -134,25 +135,27 @@ class Shield:
                 self.head_models[h] = m
 
     # ── field construction (benchmark-identical) ─────────────────────────────
+    # Every pilot text goes through own_words (S56): a pasted block is someone else's text, never the pilot's ask.
+    # A turn with no pasted block is unchanged byte-for-byte, so the benchmark shapes still hold for it.
 
     @staticmethod
     def pilot_turn_fields(prompt: str, exchanges: List[Dict]) -> Dict[str, str]:
         """S1 fields for a NEW pilot turn, given the transcript's completed exchanges (units.py S1)."""
         prev = shape.tail(exchanges[-1]['assistant'], shape.CAP_PREV_TAIL) if exchanges else ''
-        prior = [shape.head(e['user'], shape.CAP_EARLIER) for e in exchanges[-2:]]
-        return {'pilot': shape.head(prompt, shape.CAP_PILOT), 'prev': prev,
+        prior = [shape.head(own_words(e['user']), shape.CAP_EARLIER) for e in exchanges[-2:]]
+        return {'pilot': shape.head(own_words(prompt), shape.CAP_PILOT), 'prev': prev,
                 'earlier': shape.join_list(prior)}
 
     @staticmethod
     def text_block_fields(pilot: str, blocks: List[str]) -> List[Dict[str, str]]:
         """S2 fields, one per assistant text block of this turn (units.py S2)."""
-        ask = shape.head(pilot, shape.CAP_ASK)
+        ask = shape.head(own_words(pilot), shape.CAP_ASK)
         return [{'ask': ask, 'text': shape.head(b, shape.CAP_BLOCK)} for b in blocks]
 
     @staticmethod
     def reply_fields(pilot: str, blocks: List[str]) -> Dict[str, str]:
         """S6 fields: the pilot's turn + the WHOLE reply (units.py S6: text parts joined by newline)."""
-        return {'pilot': shape.head(pilot, shape.CAP_PILOT),
+        return {'pilot': shape.head(own_words(pilot), shape.CAP_PILOT),
                 'reply': shape.headtail('\n'.join(blocks), shape.CAP_REPLY_HEAD, shape.CAP_REPLY_TAIL)}
 
     @classmethod
