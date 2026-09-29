@@ -39,7 +39,7 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 7                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 9                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'
 ORDER = ('nebula', 'hypernym')          # row order: shield rows, then the Zephyr line
 NICE = {'nebula': 'nebula (local offline shield)', 'hypernym': 'hypernym (Zephyr connector)'}
@@ -47,7 +47,9 @@ HOME_DIR = Path.home() / '.hypernym-nebula'
 BIN = HOME_DIR / 'bin'
 COPY = BIN / 'nebula_statusline.py'
 LAUNCHER = BIN / 'statusline'
-OFF = HOME_DIR / 'statusline_off'             # written by `remove`: SessionStart will not re-add the status line
+OFF = HOME_DIR / 'statusline_off'
+INTRO = HOME_DIR / 'intro.json'                # first sight after install: the logo stays SOLID for INTRO_S
+INTRO_S = 60             # written by `remove`: SessionStart will not re-add the status line
 TIMEOUT_S = 4.0
 SHARED = ('nebula_statusline.py', 'brand.py', 'termbg.py', 'brand_assets/wings_candidates.json')
 BRAND_DEFAULTS = {'enabled': True, 'bg': 'auto', 'icons': True, 'mark': 'mid', 'mode': 'gentle', 'rest_alpha': 0.1,
@@ -227,6 +229,8 @@ def layout(shield: list, zephyr: str, now: float) -> list:
             mode = 'gentle' if mode == 'cameo' else mode           # no colour is guessed (cameo's fade needs a bg)
     else:
         bg = tuple(b['bg'])
+    if intro_solid(now):                                           # first minute after install: fully SOLID
+        alpha = 1.0
     rows, word = logo(now, bg, mode, alpha, b['mark'])
     if b['icons'] is True:
         word = icon(wings_icon(b['wings'])) + ' ' + word          # the chosen wings (contact sheet #)
@@ -253,7 +257,7 @@ def refresh() -> None:
             src, dst = here / rel, BIN / rel
             if not dst.exists() or dst.read_bytes() != src.read_bytes():
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                tmp = dst.with_name(dst.name + '.tmp')
+                tmp = dst.with_name(f'{dst.name}.{os.getpid()}.tmp')      # own temp file: no write race
                 shutil.copyfile(src, tmp)
                 tmp.replace(dst)
     text = ("#!/bin/sh\n"
@@ -261,7 +265,7 @@ def refresh() -> None:
             "# Shows whichever of the two is installed (read from Claude Code's plugin registry every refresh).\n"
             f'exec python3 "{COPY}" compose\n')
     if not LAUNCHER.exists() or LAUNCHER.read_text() != text:
-        tmp = LAUNCHER.with_suffix('.tmp')
+        tmp = LAUNCHER.with_name(f'{LAUNCHER.name}.{os.getpid()}.tmp')
         tmp.write_text(text)
         tmp.replace(LAUNCHER)
     LAUNCHER.chmod(0o755)
@@ -287,7 +291,7 @@ def write_settings(s: dict) -> str:
         shutil.copy2(p, b)
         note = f"backup: {b}"
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name('settings.json.nebula_tmp')
+    tmp = p.with_name(f'settings.json.nebula_{os.getpid()}.tmp')
     tmp.write_text(json.dumps(s, indent=2) + '\n')
     json.loads(tmp.read_text())
     tmp.replace(p)
@@ -317,10 +321,49 @@ def install(force: bool) -> int:
     return 0
 
 
+def arm_intro() -> None:
+    """SessionStart after a fresh install, reinstall or update of EITHER plugin: arm the intro — the logo is drawn fully
+    SOLID for the first INTRO_S seconds the bar is on screen (pilot, S54). "Fresh" = a registry entry (Claude Code's
+    installed_plugins.json: installPath, version, installedAt, lastUpdated, commit) this status line has not seen.
+    Seen entries live in ~/.hypernym-nebula/intro_seen.json — never inside the plugin folder."""
+    reg = load_json(config_dir() / 'plugins' / 'installed_plugins.json')
+    if 'plugins' not in reg:
+        return
+    keys = [json.dumps(e, sort_keys=True) for n in ORDER if f'{n}@{MARKETPLACE}' in reg['plugins']
+            for e in reg['plugins'][f'{n}@{MARKETPLACE}']]
+    seen_file = HOME_DIR / 'intro_seen.json'
+    seen = json.loads(seen_file.read_text()) if seen_file.exists() else []
+    new = [k for k in keys if k not in seen]
+    if not new:
+        return
+    HOME_DIR.mkdir(parents=True, exist_ok=True)
+    for path, obj in ((INTRO, {'armed_at': time.time()}), (seen_file, seen + new)):
+        tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+        tmp.write_text(json.dumps(obj))
+        tmp.replace(path)
+
+
+def intro_solid(now: float) -> bool:
+    """True while the armed intro runs: its minute starts at the first bar drawn, then the file is removed."""
+    if not INTRO.exists():
+        return False
+    st = json.loads(INTRO.read_text())
+    if 'start' not in st:
+        st['start'] = now
+        tmp = INTRO.with_name(f'{INTRO.name}.{os.getpid()}.tmp')
+        tmp.write_text(json.dumps(st))
+        tmp.replace(INTRO)
+    if now - st['start'] < INTRO_S:
+        return True
+    INTRO.unlink()
+    return False
+
+
 def auto() -> str:
     """SessionStart: set our status line when there is none, or when it is one of ours / an older version of ours.
     Never a foreign one, never after `remove`. Returns what it did ('' = nothing) — hooks must not print."""
     refresh()
+    arm_intro()
     if OFF.exists():
         return ''
     s = load_json(settings_path())
@@ -359,7 +402,10 @@ def peers(me: str) -> str:
 def main() -> int:
     a = sys.argv[1:]
     if a == ['compose']:
-        print('\n'.join(compose(sys.stdin.read())))
+        try:
+            print('\n'.join(compose(sys.stdin.read())))
+        except Exception as e:                    # never a BLANK bar: say what broke (type + message), plainly
+            print(f"✖ hypernym-nebula status line: {type(e).__name__}: {str(e)[:140]}")
         return 0
     if a == ['refresh']:
         refresh()

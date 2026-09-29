@@ -49,7 +49,7 @@ def background(cache: Path) -> Tuple[int, int, int]:
     if prog != 'Apple_Terminal':
         raise RuntimeError(f"auto background supports Apple Terminal only (TERM_PROGRAM={prog}); set brand.bg to [r,g,b]")
     tty = controlling_tty()
-    data = json.loads(cache.read_text()) if cache.exists() else {}
+    data = _load(cache)
     if tty in data and time.time() - data[tty]['at'] < MAX_AGE_S:
         return tuple(data[tty]['rgb'])
     r = subprocess.run(['osascript', '-e', SCRIPT.format(tty=tty)], capture_output=True, text=True,
@@ -62,7 +62,24 @@ def background(cache: Path) -> Tuple[int, int, int]:
     vals = [v.strip() for v in out.split(',')]
     rgb = tuple(int(round(int(v) / 257)) for v in vals[:3])
     data[tty] = {'rgb': list(rgb), 'profile': ','.join(vals[3:]), 'at': time.time()}
-    tmp = cache.with_suffix('.tmp')
+    _save(cache, data)
+    return rgb
+
+
+def _load(cache: Path) -> dict:
+    """The per-tty cache. A corrupt cache (it happened: two windows once interleaved their writes) is DELETED and reported
+    — rebuilt on the next refresh — never trusted, never allowed to take the status line down."""
+    if not cache.exists():
+        return {}
+    try:
+        return json.loads(cache.read_text())
+    except json.JSONDecodeError as e:
+        cache.unlink()
+        raise RuntimeError(f"background cache was corrupt ({e.msg}); it is rebuilt on the next refresh")
+
+
+def _save(cache: Path, data: dict) -> None:
+    """Atomic and race-free: every process writes its OWN temp file (pid in the name), then renames it over the cache."""
+    tmp = cache.with_name(f'{cache.name}.{os.getpid()}.tmp')
     tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
     tmp.replace(cache)
-    return rgb
