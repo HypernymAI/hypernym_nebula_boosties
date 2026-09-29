@@ -531,6 +531,49 @@ def enroll(url: str, minutes: float) -> dict:
     sys.exit("sign-in was not completed in time; run login again")
 
 
+def pair_with_portal(portal: str, minutes: float) -> dict:
+    """Sign in through the Hypernym account portal (sign-up, terms, credit and computers live there): this machine's
+    key proves itself to the portal, the person approves the short code in the browser, and the portal vouches for
+    this computer on RESTORIA. Nothing to copy or remember; no token or password is stored here."""
+    device_key, device = restoria_identity.load_or_create_device()
+    label = f"hypernym plugin on {socket.gethostname()}"
+    issued_at = str(int(time.time() * 1_000_000))
+    text = restoria_identity.canonical_text('HYPERNYM-PORTAL-DEVICE-PAIRING-v1',
+                                            [('device', device), ('label', label), ('issued_at', issued_at)])
+    body = json.dumps({'device': device, 'label': label, 'issued_at': issued_at,
+                       'signature': restoria_identity.sign_text(device_key, text)}).encode()
+    try:
+        start = raw_json(portal, 'POST', '/api/device/start', body)
+    except urllib.error.HTTPError as e:
+        sys.exit(f"the portal refused this computer: {http_error_text(e)}")
+    except (urllib.error.URLError, OSError) as e:
+        sys.exit(f"{portal} unreachable: {e}")
+    # flush: the code and link must be on screen (and in a background run's log) BEFORE the wait
+    print(f"Your code: {start['user_code']}", flush=True)
+    print("Opening your browser to approve this computer. If it does not open, visit:", flush=True)
+    print(f"  {start['verification_uri']}", flush=True)
+    webbrowser.open(start['verification_uri'])
+    deadline = min(time.time() + minutes * 60, start['expires_at'] + 60)
+    while time.time() < deadline:
+        time.sleep(2)
+        try:
+            st = raw_json(portal, 'GET', f"/api/device/status/{start['enrollment_id']}")
+        except urllib.error.HTTPError as e:
+            sys.exit(f"sign-in status failed: {http_error_text(e)}")
+        except (urllib.error.URLError, OSError) as e:
+            print(f"  (status check failed: {e}; retrying)", flush=True)
+            continue
+        if st['status'] == 'pending':
+            continue
+        if st['status'] == 'approved':
+            return {'device': device, 'principal': st['principal'],
+                    'expires_at': time.time() + DEVICE_AUTHORIZATION_DAYS * 86400}
+        if st['status'] == 'denied':
+            sys.exit("this computer was denied on the portal")
+        sys.exit(f"the code {st['status']}; run login again")
+    sys.exit("sign-in was not completed in time; run login again")
+
+
 def save_server(server: dict) -> None:
     config = {'servers': []}
     if CONFIG.exists():
@@ -558,6 +601,19 @@ def cmd_login(args, servers):
         if not key:
             sys.exit("empty key")
         server['api_key'] = key
+    elif args.portal:
+        paired = pair_with_portal(args.portal.rstrip('/'), args.minutes)
+        try:
+            node = raw_json(url, 'GET', '/api/github/login/enroll/node')['node_address']
+        except urllib.error.HTTPError as e:
+            sys.exit(f"{url} does not offer sign-in: {http_error_text(e)}")
+        except (urllib.error.URLError, OSError) as e:
+            sys.exit(f"{url} unreachable: {e}")
+        server['auth'] = 'restoria'
+        server['device'] = paired['device']
+        server['node_address'] = node
+        server['expires_at'] = paired['expires_at']
+        who = f"identity {paired['principal']}, "
     else:
         e = enroll(url, args.minutes)
         server['auth'] = 'restoria'
@@ -568,6 +624,10 @@ def cmd_login(args, servers):
     try:
         q = call(server, "/api/me/quota")
     except urllib.error.HTTPError as e:
+        if args.portal:
+            # e.g. the account isn't set up yet on the portal: the Zephyr's message says what to finish, and where
+            save_server(server)
+            sys.exit(f"this computer is signed in, but {url} refused it: {http_error_text(e)}")
         sys.exit(f"key rejected by {url}: {http_error_text(e)}")
     except (urllib.error.URLError, OSError) as e:
         sys.exit(f"{url} unreachable: {e}")
@@ -760,6 +820,7 @@ def main() -> None:
     p = sub.add_parser('login')
     p.add_argument('--key', default='')
     p.add_argument('--url', default=DEFAULT_URL)
+    p.add_argument('--portal', default='', help='sign in through the account portal, e.g. https://portal.hypernym.ai')
     p.add_argument('--name', default='zephyr')
     p.add_argument('--minutes', type=float, default=10)
     p = sub.add_parser('account')
