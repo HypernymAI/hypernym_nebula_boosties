@@ -28,6 +28,7 @@ NO .get().
 """
 import argparse
 import datetime
+import getpass
 import hashlib
 import json
 import os
@@ -446,36 +447,80 @@ def raw_json(url: str, method: str, path: str, body: bytes = b'', headers: dict 
     return json.load(urllib.request.urlopen(req, timeout=30))
 
 
-def enroll(url: str, minutes: float, words: str) -> dict:
-    """RESTORIA enrollment: principal-signed device authorization → GitHub in the browser (invite checked on
-    the Zephyr) → principal signs the enrollment → the device is authorized. No secret, token or app
-    credential ever reaches this machine."""
-    principal_key, principal, created, principal_words = restoria_identity.load_or_create_principal(words)
-    device_key, device = restoria_identity.load_or_create_device()
+def signed_device_authorization(principal_key: int, principal: str, device: str) -> tuple:
     now_us = int(time.time() * 1_000_000)
     fields = restoria_identity.device_authorization_fields(
         device, principal, DEVICE_SCOPES, f"hypernym plugin on {socket.gethostname()}",
         now_us, now_us + DEVICE_AUTHORIZATION_DAYS * 86400 * 1_000_000)
-    signature = restoria_identity.sign_text(principal_key, restoria_identity.device_authorization_text(fields))
-    try:
-        start = raw_json(url, 'POST', '/api/github/login/enroll/start',
-                         json.dumps({'device_authorization': fields, 'principal_signature': signature}).encode())
-    except urllib.error.HTTPError as e:
-        sys.exit(f"could not start sign-in on {url}: {http_error_text(e)}")
-    node = start['node_address']
-    if created:
-        print("New RESTORIA principal (your identity across every Zephyr): " + principal)
-        print("Your 12 words — write them down; they move this identity to another machine:")
-        print("  " + ' '.join(principal_words))
-        print(f"(also kept at {restoria_identity.PRINCIPAL_FILE}, mode 600)\n")
-    print("Opening your browser to sign in with GitHub. If it does not open, visit:")
-    print(f"  {start['auth_url']}")
-    webbrowser.open(start['auth_url'])
-    status_path = f"/api/github/login/enroll/status/{start['enrollment_id']}"
-    confirm_path = f"/api/github/login/enroll/confirm/{start['enrollment_id']}"
-    deadline = min(time.time() + minutes * 60, start['expires_at'])
+    return fields, restoria_identity.sign_text(principal_key, restoria_identity.device_authorization_text(fields))
+
+
+def ask_for_words(existing: str, words: str) -> tuple:
+    """This GitHub account already has an identity: derive it from the user's 12 words and check the address
+    LOCALLY before anything is signed or sent. Typed at a terminal, or given with --words."""
+    while True:
+        if not words:
+            if not sys.stdin.isatty():
+                return None
+            print(f"This GitHub account already has a Hypernym identity ({existing}).")
+            words = getpass.getpass("Enter its 12 words (not echoed): ")
+        try:
+            key, address, word_list = restoria_identity.principal_from_words(words)
+        except ValueError as e:
+            print(f"  {e}")
+            words = ''
+            if not sys.stdin.isatty():
+                return None
+            continue
+        if address == existing:
+            return key, address, word_list
+        print(f"  those words are identity {address}, not {existing}; try again")
+        words = ''
+        if not sys.stdin.isatty():
+            return None
+
+
+def enroll(url: str, minutes: float, words: str) -> dict:
+    """RESTORIA sign-in. One GitHub approval. A person with no identity gets a new one (12 words shown once, after
+    it's accepted). A person whose GitHub account already has one proves it with their 12 words, checked locally
+    against the identity's address; the words and keys never leave this machine. No app credential, token or
+    Hypernym secret is ever held here."""
+    device_key, device = restoria_identity.load_or_create_device()
+    saved = restoria_identity.load_principal()
+    if saved is not None:
+        principal_key, principal, principal_words = saved
+        source = 'saved'
+    elif words:
+        principal_key, principal, principal_words = restoria_identity.principal_from_words(words)
+        source = 'words'
+    else:
+        principal_key, principal, principal_words = restoria_identity.mint_principal()
+        source = 'new'
+
+    pending = restoria_identity.load_pending(url)
+    if pending is not None:
+        if pending['device'] == device:
+            enrollment_id, node = pending['enrollment_id'], pending['node']
+            print("Finishing the sign-in you started (no new GitHub approval needed).")
+        else:
+            pending = None
+    if pending is None:
+        fields, signature = signed_device_authorization(principal_key, principal, device)
+        try:
+            start = raw_json(url, 'POST', '/api/github/login/enroll/start',
+                             json.dumps({'device_authorization': fields, 'principal_signature': signature}).encode())
+        except urllib.error.HTTPError as e:
+            sys.exit(f"could not start sign-in on {url}: {http_error_text(e)}")
+        enrollment_id, node = start['enrollment_id'], start['node_address']
+        print("Opening your browser to sign in with GitHub. If it does not open, visit:")
+        print(f"  {start['auth_url']}")
+        webbrowser.open(start['auth_url'])
+
+    status_path = f"/api/github/login/enroll/status/{enrollment_id}"
+    confirm_path = f"/api/github/login/enroll/confirm/{enrollment_id}"
+    switch_path = f"/api/github/login/enroll/switch/{enrollment_id}"
+    deadline = time.time() + minutes * 60
     while time.time() < deadline:
-        time.sleep(2)
         proof = restoria_identity.request_credential(device_key, device, node, 'GET', status_path, b'')
         try:
             st = raw_json(url, 'GET', status_path, headers={'X-Restoria-Proof': proof})
@@ -483,12 +528,32 @@ def enroll(url: str, minutes: float, words: str) -> dict:
             sys.exit(f"sign-in status failed: {http_error_text(e)}")
         except (urllib.error.URLError, OSError) as e:
             print(f"  (status check failed: {e}; retrying)")
+            time.sleep(2)
             continue
         if st['status'] == 'pending':
+            time.sleep(2)
             continue
         if st['status'] == 'not_invited':
+            restoria_identity.clear_pending()
             sys.exit(f"GitHub @{st['github_username']} is not on this Zephyr's invite list yet. "
                      "Ask the operator for an invitation, then run login again.")
+        if st['status'] == 'identity_exists':
+            proven = ask_for_words(st['principal'], words)
+            if proven is None:
+                restoria_identity.save_pending({'url': url, 'enrollment_id': enrollment_id, 'node': node,
+                                                'device': device, 'created_at': time.time()})
+                sys.exit(f"GitHub @{st['github_username']} already has a Hypernym identity ({st['principal']}). "
+                         "Ask the user for its 12 words, then run: login --words \"<12 words>\" — it finishes this "
+                         "same sign-in (no new GitHub approval) within 30 minutes.")
+            principal_key, principal, principal_words = proven
+            source = 'words'
+            fields, signature = signed_device_authorization(principal_key, principal, device)
+            body = json.dumps({'device_authorization': fields, 'principal_signature': signature}).encode()
+            proof = restoria_identity.request_credential(device_key, device, node, 'POST', switch_path, body)
+            try:
+                st = raw_json(url, 'POST', switch_path, body, headers={'X-Restoria-Proof': proof})
+            except urllib.error.HTTPError as e:
+                sys.exit(f"the Zephyr did not accept that identity: {http_error_text(e)}")
         if st['status'] == 'awaiting_principal_signature':
             statement = st['enrollment_statement']
             if not restoria_identity.expected_enrollment_text(principal, node, statement):
@@ -499,11 +564,21 @@ def enroll(url: str, minutes: float, words: str) -> dict:
                 st = raw_json(url, 'POST', confirm_path, body, headers={'X-Restoria-Proof': proof})
             except urllib.error.HTTPError as e:
                 print(f"  (confirm not accepted yet: {http_error_text(e)}; retrying)")
+                time.sleep(2)
                 continue
         if st['status'] == 'enrolled':
+            restoria_identity.clear_pending()
+            if source != 'saved':
+                restoria_identity.save_principal(principal_words)
+            if source == 'new':
+                print("Your new Hypernym identity: " + principal)
+                print("Your 12 words — write them down; they bring this identity to another machine:")
+                print("  " + ' '.join(principal_words))
+                print(f"(also kept at {restoria_identity.PRINCIPAL_FILE}, mode 600)\n")
             return {'github_username': st['github_username'], 'email': st['email'], 'node_address': node,
                     'device': device, 'principal': principal,
-                    'expires_at': (now_us / 1_000_000) + DEVICE_AUTHORIZATION_DAYS * 86400}
+                    'expires_at': time.time() + DEVICE_AUTHORIZATION_DAYS * 86400}
+        time.sleep(2)
     sys.exit("sign-in was not completed in time; run login again")
 
 

@@ -7,9 +7,9 @@ fails, run `gh auth setup-git` once). On macOS with Apple Silicon, run
 (leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then start a new
 Claude Code session: **nebula** (offline shield: no account, sends nothing) sets itself up in seconds, and the
 shared status line (Hypernym logo, the shield's judgement row, the Zephyr line) turns on by itself unless a custom
-`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr (sign-in is invite-only, through GitHub): the first time ever, say **"hypernym login"**
-— it creates your identity and shows 12 words to write down; on a machine joining an identity that already exists,
-say **"hypernym login with my 12 words"** and give them.
+`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). For Zephyr, say **"hypernym login"** (invite-only, through GitHub). The first time, it shows your 12 words once:
+write them down. On any other computer, the same **"hypernym login"** recognizes your GitHub account and asks for
+those 12 words, checked locally, never sent.
 Check with `claude plugin list` and `/nebula:shield-status`; update with
 `claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && claude plugin update hypernym@hypernym-nebula`.
 
@@ -69,14 +69,12 @@ Add this repo as a plugin marketplace in Codex, then install `hypernym`.
 
 In any git repo, tell Claude:
 
-1. **"hypernym login"** opens GitHub in your browser (like `claude login`). Sign-in is invite-only: the Zephyr
-   checks your GitHub account is on its invite list, and if it isn't, nothing is created; if it is, you land on the
-   account Hypernym set up for you. The plugin holds no
-   secret of Hypernym's. The first time, it makes your identity: 12 Banksian words (your principal, the same
-   identity on every Zephyr, write them down) and a key for this install (the device key), both kept in
-   `~/.hypernym/identity/`, readable only by you. From then on every request is signed with the device key, and
-   no token is stored. On another computer, bring the same identity with `hypernym login --words "…"`. Given a
-   key instead? Use `hypernym login --key -`.
+1. **"hypernym login"** opens GitHub in your browser (like `claude login`). Sign-in is invite-only: if your GitHub
+   account isn't on the Zephyr's invite list, nothing is created; if it is, you land on the account Hypernym set up for you. The plugin holds no secret of Hypernym's. The first
+   time, it gives you your identity: 12 words, shown once — write them down. On any other computer, say "hypernym
+   login" again: it recognizes your GitHub account and asks for your 12 words (checked on your machine; they never
+   leave it). Each computer gets its own key in `~/.hypernym/identity/` (readable only by you) that signs every
+   request; no token is stored. Given a key instead? Use `hypernym login --key -`.
 2. **"hypernym help"** shows your account, this repo's floats and repo-analyze jobs, and any packages on disk with
    their drift.
 3. **Analyze**: describe the bug or area you want covered. Claude does a dry run first and shows exactly what

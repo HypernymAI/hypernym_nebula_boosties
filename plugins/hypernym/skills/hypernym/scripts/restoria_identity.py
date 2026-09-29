@@ -258,30 +258,64 @@ def _write_secret(path: Path, obj: dict) -> None:
     os.chmod(path, 0o600)
 
 
-def load_or_create_principal(words_text: str = '') -> tuple:
-    """(private_key, address, created_now, words). From the saved file, from given words, or freshly minted."""
-    if PRINCIPAL_FILE.exists():
-        saved = json.loads(PRINCIPAL_FILE.read_text())
-        key = _key_from_words(saved['words'])
-        if words_text:
-            given = _key_from_words(words_text.split())
-            if given != key:
-                raise ValueError(f"{PRINCIPAL_FILE} already holds a different principal; move it aside first")
-        return key, address_of(key), False, saved['words']
-    if words_text:
-        words = [w.lower() for w in words_text.split()]
-    else:
-        table = _load_words()
-        value = int.from_bytes(secrets.token_bytes(15), 'big')
-        words = []
-        for _ in range(WORD_COUNT):
-            words.append(table[value & 1023])
-            value >>= 10
-        words.reverse()
+PENDING_FILE = IDENTITY_DIR / 'pending_enrollment.json'
+
+
+def principal_from_words(words_text: str) -> tuple:
+    """(private_key, address, words) derived locally from 12 words. Nothing is written or sent."""
+    words = [w.lower() for w in words_text.split()]
     key = _key_from_words(words)
-    address = address_of(key)
-    _write_secret(PRINCIPAL_FILE, {'address': address, 'words': words})
-    return key, address, True, words
+    return key, address_of(key), words
+
+
+def mint_principal() -> tuple:
+    """A brand-new principal (private_key, address, words) — held in memory until enrollment confirms it."""
+    table = _load_words()
+    value = int.from_bytes(secrets.token_bytes(15), 'big')
+    words = []
+    for _ in range(WORD_COUNT):
+        words.append(table[value & 1023])
+        value >>= 10
+    words.reverse()
+    key = _key_from_words(words)
+    return key, address_of(key), words
+
+
+def load_principal():
+    """The saved principal (private_key, address, words), or None if this machine has none."""
+    if not PRINCIPAL_FILE.exists():
+        return None
+    saved = json.loads(PRINCIPAL_FILE.read_text())
+    key = _key_from_words(saved['words'])
+    return key, address_of(key), saved['words']
+
+
+def save_principal(words: list) -> None:
+    key = _key_from_words(words)
+    if PRINCIPAL_FILE.exists():
+        PRINCIPAL_FILE.replace(PRINCIPAL_FILE.with_suffix(f".replaced_{int(time.time())}.json"))
+    _write_secret(PRINCIPAL_FILE, {'address': address_of(key), 'words': words})
+
+
+def save_pending(pending: dict) -> None:
+    _write_secret(PENDING_FILE, pending)
+
+
+def load_pending(url: str, max_age_s: int = 1800):
+    """A sign-in paused at 'this GitHub account already has an identity' on this server, if recent."""
+    if not PENDING_FILE.exists():
+        return None
+    pending = json.loads(PENDING_FILE.read_text())
+    if pending['url'] != url:
+        return None
+    if time.time() - pending['created_at'] > max_age_s:
+        return None
+    return pending
+
+
+def clear_pending() -> None:
+    if PENDING_FILE.exists():
+        PENDING_FILE.unlink()
 
 
 def load_or_create_device() -> tuple:

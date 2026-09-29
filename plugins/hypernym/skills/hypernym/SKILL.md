@@ -79,16 +79,17 @@ the URL too), and wait:
 python3 <skill dir>/scripts/hypernym.py login
 ```
 
-When it prints the 12 words (first login only), tell the user to write them down: they move this identity to
-another machine. On a new machine, bring the same identity with:
+This one command is right for everyone, on every machine. A first-time user gets a new identity: when it prints
+the 12 words, tell them to write them down (they are shown once). A user who already has an identity (signed in on
+another machine) is recognized from their GitHub account: in a terminal it asks for their 12 words; when you run it,
+it stops with "already has a Hypernym identity" and exits. Then ask the user for their 12 words and run:
 
 ```bash
 python3 <skill dir>/scripts/hypernym.py login --words "word1 word2 … word12"
 ```
 
-Never run a plain `login` on a machine for someone who already has an identity: it mints a NEW identity, the Zephyr
-refuses it (their GitHub account already belongs to their existing identity), and sign-in fails at the last step.
-If they say they've signed in before, or they give 12 words, use `login --words`.
+It finishes the SAME sign-in (no second GitHub approval) and checks the words against their identity locally before
+anything is sent. The words never leave the machine; do not echo them back or write them anywhere else.
 
 "not on this Zephyr's invite list" means the operator has not invited that GitHub account yet — nothing was
 created. If the user was given a key instead, log in with the key:
