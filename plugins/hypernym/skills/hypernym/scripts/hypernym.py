@@ -46,6 +46,8 @@ HOME = Path.home() / '.hypernym'
 CONFIG = HOME / 'config.json'
 PACKAGES = HOME / 'packages'
 SUBMISSIONS = HOME / 'submissions'
+SESSIONS = HOME / 'sessions'                   # <session_id>.json: the package THIS session loaded (record_load.py)
+CREDIT_REFUSED = HOME / 'credit_refused.json'  # the last submission was refused for credit (402); the status line says so
 DEFAULT_URL = 'https://zephyr-b-gpu.hypernym.ai'
 PAGE = 100
 # What this plugin's device key may do on a Zephyr (RESTORIA device scopes). Nothing else is reachable —
@@ -545,7 +547,14 @@ def cmd_analyze(args, servers):
     try:
         r = call(server, "/api/repo/analyze", body)
     except urllib.error.HTTPError as e:
-        sys.exit(f"submit failed: {http_error_text(e)}")
+        text = http_error_text(e)
+        if e.code == 402 and 'insufficient_credit' in text:
+            HOME.mkdir(parents=True, exist_ok=True)
+            CREDIT_REFUSED.write_text(json.dumps({'server': server['name'], 'at': time.time()}))
+            sys.exit(f"not submitted: not enough credit — add credit at https://portal.hypernym.ai/plan ({text})")
+        sys.exit(f"submit failed: {text}")
+    if CREDIT_REFUSED.exists():
+        CREDIT_REFUSED.unlink()                            # a submission went through: credit is no longer the problem
     SUBMISSIONS.mkdir(parents=True, exist_ok=True)
     (SUBMISSIONS / f"{r['job_id']}.json").write_text(json.dumps(
         {'job_id': r['job_id'], 'server': server['name'], 'repo': info['key'], 'commit': commit, 'question': question,

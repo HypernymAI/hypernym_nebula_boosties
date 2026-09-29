@@ -23,11 +23,13 @@ update lines. Works before sign-in. Show it as-is.
 
 ## At session start (automatic)
 
-When a session starts, resumes, is cleared or is compacted inside a GitHub repo, a hook adds a short note to the
-context: the newest package for this repo, the question it answered, how far the code has drifted from it (the files
-to read directly), and the exact `load` command. It never loads the package itself and never calls the network.
-Load the package when the work touches this repo's code. After a compaction, a package loaded earlier is gone from
-context: reload it if the work still needs it. `HYPERNYM_SESSION_CONTEXT=0` turns the note off.
+**Loading is your job, never the user's.** Never ask the user to run `load`, `sync` or `wait`: finished analyses
+download by themselves, and you load them. When a session starts, resumes or is cleared inside a GitHub repo, a hook
+adds a short note: if an analysis for this repo is ready, load it yourself (the note gives the exact command) when the
+work touches this repo's code; if there is none, offer one only when the task is about this repo's code — the approval
+dialog is the user's only decision. After a compaction the note appears only if you had loaded the analysis in this
+session: load it again right away with the command it gives. The hook never calls the network.
+`HYPERNYM_SESSION_CONTEXT=0` turns the note off.
 
 ## "hypernym help" — always start here
 
@@ -74,8 +76,8 @@ If a package exists, offer to load it.
    ```bash
    python3 <skill dir>/scripts/hypernym.py --dir "$PWD" wait <job_id> --minutes 10
    ```
-   Run `wait` again if it is still running, or tell the user the next "hypernym help" in any session
-   will download it.
+   Run `wait` again yourself if it is still running; finished jobs also download by themselves in the background.
+   Never ask the user to run it.
 4. To stop a running job (only when the user asks):
    ```bash
    python3 <skill dir>/scripts/hypernym.py --dir "$PWD" cancel <job_id>
@@ -92,8 +94,9 @@ machine can read them.
 
 - `packages` lists them with drift: how many of the package's files differ in the working tree
   now, and how many commits HEAD is past the package's commit.
-- `load` prints the newest package (or `--package DIR`) for you to read into the session. Mention the
-  drift when you load it: files that changed since the package describe older code.
+- `load` prints the newest package (or `--package DIR`) for you to read into the session — you run it, the user
+  never does. Mention the drift when you load it: files that changed since the package describe older code.
+  The status line shows "analysis in use" once this session has loaded it.
 
 ## Setup — login and GitHub
 

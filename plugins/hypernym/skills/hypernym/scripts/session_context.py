@@ -7,9 +7,12 @@ having to say "hypernym help".
 What it prints is the agent's context (plain stdout, the one form both Claude Code and Codex accept for SessionStart):
   - the newest package for this repo: job, commit, how many commits behind HEAD, the question it answered, its size
   - drift: which packaged files differ from the working tree (read those directly; the package describes old versions)
-  - how to load it (the full package is ~80K tokens: far over what a hook may inject, and too much to spend on work
-    that doesn't touch this code, so loading stays one explicit step)
-  - after a compaction: that a package loaded earlier is gone from context and must be reloaded if still needed
+  - that loading is the AGENT's job: load it yourself when the work touches this repo's code (the full package is ~80K
+    tokens — too much for a hook to inject, and wasted on unrelated work); the user never runs load/sync/wait
+  - with no package: offer an analysis only when the task is about this repo's code (the approval dialog is the user's
+    only decision)
+  - after a compaction (source=compact): ONLY if this session had loaded a package (~/.hypernym/sessions/<session_id>.json,
+    written by record_load.py) — "load it again now", with the exact command; otherwise nothing
 
 Local only: reads ~/.hypernym and runs git. Never calls the network, never submits anything. Prints nothing outside a
 GitHub repo, and nothing when HYPERNYM_SESSION_CONTEXT=0. NO .get().
@@ -35,9 +38,9 @@ def package_lines(info: dict, cwd: str) -> list:
     if not pkgs:
         if not hypernym.load_servers():
             return []
-        return [f"Hypernym: no context package for {info['key']} on this computer yet. "
-                "`hypernym help` shows this repo's jobs and downloads any that finished; an analysis is only ever "
-                "submitted with the user's explicit approval."]
+        return [f"Hypernym: no analysis for {info['key']} on this computer yet. Offer one only when the task is about "
+                "this repo's code; submitting shows the user Hypernym's approval dialog, which is their only decision. "
+                "Finished analyses download by themselves."]
     pkg = pkgs[0]
     m = json.loads((pkg / 'manifest.json').read_text())
     d = hypernym.drift(info, m)
@@ -48,7 +51,9 @@ def package_lines(info: dict, cwd: str) -> list:
         if d['commits_behind'] != 1:
             behind += 's'
     lines = [
-        f"Hypernym context package for {info['key']} (on this computer; loading it sends nothing anywhere).",
+        f"Hypernym: an analysis for {info['key']} is ready on this computer. Load it yourself when the work touches "
+        f"this repo's code (loading sends nothing anywhere; never ask the user to run load, sync or wait): "
+        f"{load_command(cwd)}",
         f"Newest: job {m['job_id']} from {m['server']}, commit {m['commit'][:12]} ({behind} behind HEAD), "
         f"completed {m['completed_at_utc']}, {m['metadata']['prompt_tokens']} tokens covering "
         f"{m['metadata']['files_selected']} files.",
@@ -69,10 +74,21 @@ def package_lines(info: dict, cwd: str) -> list:
         lines.append(f"Drift: none; all {d['files']} packaged files match the working tree.")
     if d['unknown']:
         lines.append(f"({d['unknown']} packaged files have no baseline hash, so their drift is unknown.)")
-    lines.append(f"Load it when the work touches this repo's code (skip it for unrelated work): {load_command(cwd)}")
     if len(pkgs) > 1:
         lines.append(f"{len(pkgs) - 1} older package(s) for this repo are also on disk (`hypernym packages`).")
     return lines
+
+
+def reload_lines(payload: dict, info: dict, cwd: str) -> list:
+    """After a compaction: only when THIS session had loaded a package for this repo, and it is still on disk."""
+    rec = hypernym.SESSIONS / f"{payload['session_id']}.json"
+    if not rec.exists():
+        return []
+    r = json.loads(rec.read_text())
+    if r['repo'] != info['key_lower'] or not Path(r['package']).exists():
+        return []
+    return [f"Hypernym: you had this repo's analysis loaded in this session and compaction removed it from context. "
+            f"Load it again now (the user does nothing): {load_command(cwd)} --package \"{r['package']}\""]
 
 
 def main() -> None:
@@ -85,12 +101,12 @@ def main() -> None:
         info = hypernym.repo_info(cwd)
     except SystemExit:
         return  # not a git repo, or not a GitHub one: Hypernym has nothing to say here
-    lines = package_lines(info, cwd)
+    if payload['source'] == 'compact':
+        lines = reload_lines(payload, info, cwd)
+    else:
+        lines = package_lines(info, cwd)
     if not lines:
         return
-    if payload['source'] == 'compact':
-        lines.insert(0, "Context was just compacted: if the Hypernym package was loaded earlier in this session, its "
-                        "text is no longer in context; reload it if the work still needs it.")
     text = '\n'.join(lines)
     if len(text) > MAX_CHARS:
         text = text[:MAX_CHARS - 40] + '\n… (truncated; run `hypernym packages`)'

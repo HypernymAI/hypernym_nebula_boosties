@@ -1,5 +1,5 @@
 {
-  "description": "hypernym: keep the status line launcher current; tell each new, resumed, cleared or compacted session what context package this repo has (local only, never the network).",
+  "description": "hypernym: keep the status line launcher current; tell each new, resumed, cleared or compacted session about this repo's analysis; remember which package a session loaded (local only, never the network).",
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "timeout": 10,
@@ -7,6 +7,11 @@
       { "matcher": "startup|resume|clear|compact",
         "hooks": [ { "type": "command", "timeout": 10,
                      "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_context.py\"" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Bash|mcp__.*hypernym_load",
+        "hooks": [ { "type": "command", "timeout": 10,
+                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/record_load.py\"" } ] }
     ]
   }
 }

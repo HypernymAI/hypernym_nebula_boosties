@@ -8,6 +8,17 @@ than REFRESH_S and no refresh is in flight, it starts one detached and shows the
 
     echo '{"session_id": "s1", "cwd": "…"}' | python3 statusline.py
 
+THE ROW (the Pilot's design, 2026-09-29 — only these states; no prefix, no counts, no drift, no account or balance;
+the server name only when more than one server is configured):
+    ⢤⣶⡾ say "hypernym login"                   not signed in / signed out
+    ⢤⣶⡾ add credit — portal.hypernym.ai/plan   the Zephyr refused a submission for credit (402 insufficient_credit)
+    ⢤⣶⡾ analyzing… 12/40 files                 a job running: floats completed/total
+    ⢤⣶⡾ analysis in use                        THIS session loaded this repo's package (~/.hypernym/sessions/<id>.json)
+    ⢤⣶⡾ analysis ready                         a package is on disk that this session has not loaded yet
+    ⢤⣶⡾ no analysis for this repo              signed in, nothing for this repo
+    not a git repo / no github remote          as before
+A server error that is none of these (unreachable, HTTP 5xx) is shown as it is — never hidden.
+
 The Zephyr icon flashes (brand.icon_flash, shared with nebula) for 2.4–2.9 s whenever the Zephyr-side data behind
 the line changes — jobs, stages, floats, packages, errors — per Claude Code window (key zephyr:<session_id>).
 NO .get().
@@ -25,6 +36,9 @@ from brand import ZEPHYR_ICON, icon_flash
 HERE = Path(__file__).resolve().parent
 STATUS = Path.home() / '.hypernym' / 'status'
 CONFIG = Path.home() / '.hypernym' / 'config.json'
+SESSIONS = Path.home() / '.hypernym' / 'sessions'
+CREDIT_REFUSED = Path.home() / '.hypernym' / 'credit_refused.json'
+LOGIN = 'say "hypernym login"'
 REFRESH_S = 20
 LOCK_S = 120
 RESET, DIM = '\x1b[0m', '\x1b[2m'
@@ -70,52 +84,59 @@ def zephyr_signature(c: dict) -> str:
                       sort_keys=True)
 
 
-def render(c: dict, stale: bool, icon: str) -> str:
+def in_use(session_id: str, key: str) -> bool:
+    """This session loaded this repo's package (written by record_load.py, the PostToolUse hook) and it is still on disk."""
+    rec = SESSIONS / f"{session_id}.json"
+    if not rec.exists():
+        return False
+    r = json.loads(rec.read_text())
+    return r['repo'] == key and Path(r['package']).exists()
+
+
+def server_state(s: dict):
+    """(colour, text) for one server, or None when it has nothing of its own to say (then the repo's state shows)."""
+    if s['error'] == 'HTTP 401':
+        return AMBER, LOGIN
+    if s['error'] == 'HTTP 402':
+        return RED, 'add credit — portal.hypernym.ai/plan'
+    if s['error']:
+        return RED, s['error']
+    running = [j for j in s['jobs'] if j['status'] == 'PROCESSING']
+    if running:
+        j = running[0]
+        if j['floats_total'] is not None:
+            return AMBER, f"analyzing… {j['floats_completed']}/{j['floats_total']} files"
+        return AMBER, 'analyzing…'
+    return None
+
+
+def render(c: dict, session_id: str, key: str, stale: bool, icon: str) -> str:
+    many = len(c['servers']) > 1
     parts = []
-    if 'sending_off' in c:
-        parts.append(f"{GREY}sending off for this repo{RESET}")
-    for s in c['servers']:
-        if s['error'] == 'HTTP 401':
-            parts.append(f"{AMBER}{s['name']} signed out — run: hypernym login{RESET}")
-            continue
-        if s['error']:
-            parts.append(f"{RED}{s['name']} {s['error']}{RESET}")
-            continue
-        running = [j for j in s['jobs'] if j['status'] == 'PROCESSING']
-        if running:
-            j = running[0]
-            prog = f"{j['stage']} {j['stage_number']}/11"
-            if j['floats_total'] is not None:
-                prog += f" · floats {j['floats_completed']}/{j['floats_total']}"
-            more = ''
-            if len(running) > 1:
-                more = f" +{len(running) - 1}"
-            parts.append(f"{AMBER}{s['name']} ⟳ {prog}{more}{RESET}")
-        elif s['floats'] or s['jobs']:
-            done = len([j for j in s['jobs'] if j['status'] == 'COMPLETED'])
-            parts.append(f"{GREEN}{s['name']} floats {s['floats_done']}/{s['floats']} · jobs {done}✓{RESET}")
+    if CREDIT_REFUSED.exists():
+        parts.append(f"{RED}add credit — portal.hypernym.ai/plan{RESET}")
+    else:
+        for s in c['servers']:
+            st = server_state(s)
+            if st is not None:
+                parts.append(f"{st[0]}{s['name'] + ' ' if many else ''}{st[1]}{RESET}")
+    if not parts:
+        if in_use(session_id, key):
+            parts.append(f"{GREEN}analysis in use{RESET}")
+        elif c['newest_package'] is not None:
+            parts.append(f"{GREEN}analysis ready{RESET}")
         else:
-            parts.append(f"{GREY}{s['name']} nothing yet{RESET}")
-    pkg = f"{GREY}no package{RESET}"
-    if c['newest_package'] is not None:
-        p = c['newest_package']
-        behind = ''
-        if p['commits_behind']:
-            behind = f", +{p['commits_behind']} commits"
-        colour = GREEN
-        if p['changed'] or p['commits_behind']:
-            colour = AMBER
-        pkg = f"{colour}pkg {c['packages']} · drift {p['changed']}/{p['files']}{behind}{RESET}"
+            parts.append(f"{GREY}no analysis for this repo{RESET}")
     tail = ''
     if stale:
         tail = f" {DIM}⟳{RESET}"
-    return f"{icon} " + '  '.join(parts) + f"  {pkg}{tail}"
+    return f"{icon} " + '  '.join(parts) + tail
 
 
 def main() -> None:
     event = json.load(sys.stdin)
     if not signed_in():
-        print(f"{CLOUD} {AMBER}hypernym: not signed in — run: hypernym login{RESET}")
+        print(f"{CLOUD} {AMBER}{LOGIN}{RESET}")
         return
     if 'workspace' in event and 'current_dir' in event['workspace']:
         cwd = event['workspace']['current_dir']
@@ -135,11 +156,11 @@ def main() -> None:
     if stale:
         refresh(cwd, key)
     if not cache.exists():
-        print(f"{CLOUD} {GREY}hypernym: loading {key}…{RESET}")
+        print(f"{CLOUD} {GREY}…{RESET}")
         return
     c = json.loads(cache.read_text())
     icon = icon_flash(ZEPHYR_ICON, f"zephyr:{event['session_id']}", zephyr_signature(c), time.time())
-    print(render(c, stale, icon))
+    print(render(c, event['session_id'], key, stale, icon))
 
 
 if __name__ == '__main__':
