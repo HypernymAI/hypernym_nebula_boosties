@@ -352,8 +352,9 @@ def describe(info: dict, pkg: Path) -> list:
 
 # ---------------------------------------------------------------- commands
 
-# The focus when the person just says "hypernym go" (no task named): the repo itself.
-WHOLE_REPO_FOCUS = "The repository as a whole: its main parts, how they fit together, and where the core logic lives."
+# The question when the person just says "hypernym go" (no task named): Zephyr measures its candidate statements on
+# the repo's own files and analyzes the best-scoring selection.
+AUTO_QUESTION = "auto"
 
 # What the two plugins are, in the Pilot's words (Hypernym and Nebula capitalized in prose, lowercase in commands).
 ABOUT = (
@@ -509,7 +510,7 @@ def cmd_analyze(args, servers):
     if args.question_file:
         question = Path(args.question_file).read_text()
     if not question or not question.strip():
-        question = WHOLE_REPO_FOCUS
+        question = AUTO_QUESTION
     commit = args.commit
     if not commit:
         commit = newest_pushed_commit(info['root'])

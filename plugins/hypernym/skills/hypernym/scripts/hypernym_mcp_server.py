@@ -216,12 +216,13 @@ def dialog_text(dry: str, top_n: int) -> str:
     repo = facts['repo'].removeprefix('https://github.com/')
     lines = [f"Analyze {repo} with Hypernym",
              "",
-             f"Focus: {facts['focus']}",
              f"Cost: up to {top_n} credits (files Hypernym has already analyzed are free)"]
     if pays is not None:
         lines.append(f"Paid from: {pays.removeprefix('pays from ')}")
-    lines += [f"Sent: the repo's GitHub address, commit {facts['commit'][:12]} and the focus — never your code.",
-              "Ready in about 40 minutes; Claude keeps working and uses it automatically."]
+    sent = f"Sent: the repo's GitHub address and commit {facts['commit'][:12]} — never your code."
+    if facts['focus'] != 'auto':
+        sent = f"Sent: the repo's GitHub address, commit {facts['commit'][:12]} and your question — never your code."
+    lines += [sent, "Claude keeps working and uses it automatically when it's ready."]
     if gap is not None:
         lines.append("Note: " + gap.replace("; these files differ and the package will describe their GitHub version.",
                                             "; the analysis describes the GitHub version."))

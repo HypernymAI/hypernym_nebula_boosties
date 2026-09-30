@@ -57,11 +57,11 @@ def package_lines(info: dict, cwd: str, source: str) -> list:
                  "execute=true (pass their current task as the question if they described one; otherwise omit it and "
                  "the whole repo is analyzed). Don't ask them anything first: the approval dialog shows the cost and is "
                  "their only decision. After Submit, tell them in one line that it started and you'll keep working and "
-                 "switch to it when it's ready (about 40 minutes); after Cancel, one line that nothing was sent.")
+                 "switch to it when it's ready; after Cancel, one line that nothing was sent.")
         if source == 'startup' and first_time_here(info):
             return [f"Hypernym: {info['key']} hasn't been analyzed yet (first session here). In your first reply, add "
                     "ONE short line inviting the user, then carry on with what they asked: \"Hypernym can analyze this "
-                    "repo so I work from a compressed map of the code that matters — ready in about 40 minutes. Say "
+                    "repo so I work from a compressed map of the code that matters. Say "
                     "'hypernym go' to start.\"", start]
         return [f"Hypernym: {info['key']} hasn't been analyzed yet. Don't bring it up unless the task is about this "
                 "repo's code.", start]

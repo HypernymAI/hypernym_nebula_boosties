@@ -18,7 +18,7 @@ python3 <this skill's directory>/scripts/hypernym.py --dir "$PWD" <command>
 Call the `hypernym_analyze` tool with `execute: true`. If the user described a task, pass it as `question`;
 otherwise leave `question` out and the whole repo is analyzed. Don't ask them anything first — Hypernym's approval
 dialog shows what is sent, the cost and who pays, and it is their only decision.
-- Submitted: one line — "Started. I'll keep working and switch to the analysis when it's ready (about 40 minutes)."
+- Submitted: one line — "Started. I'll keep working and switch to the analysis when it's ready."
 - Cancelled: one line — "Not started; nothing was sent. Say 'hypernym go' whenever you want it."
 - Finished: it downloads by itself; load it yourself when the work touches this code and say once:
   "The Hypernym analysis for this repo is ready — I'm using it now." Never ask the user to run load, sync or wait.
