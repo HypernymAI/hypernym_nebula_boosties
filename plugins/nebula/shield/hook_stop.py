@@ -20,7 +20,8 @@ from pathlib import Path
 from brand import SHIELD_ICON
 from plain_notice import PLAIN, plain_judgement, plain_surface
 from settings import excluded, resolve_config, soliton_on
-from shield_core import Shield, sha, transcript_turn
+from harness import detect
+from shield_core import Shield, sha
 from tracker import Tracker
 
 
@@ -114,7 +115,7 @@ def run(event: dict, config: Path) -> tuple:
     if excluded(sh.cfg, event['transcript_path'], event['cwd'] if 'cwd' in event else None):
         return 0, '', ''                     # excluded project: the transcript is never opened
     session_id = event['session_id']
-    pilot, blocks, _ = transcript_turn(event['transcript_path'])
+    pilot, blocks = detect(Path(event['transcript_path'])).turn(Path(event['transcript_path']))
     reply = '\n'.join(blocks)
     base = {'event': 'stop', 'session_id': session_id, 'pilot_sha': sha(pilot), 'text': reply,
             'config_sha': sh.config_sha}

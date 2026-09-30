@@ -32,6 +32,7 @@ from shield_core import Shield
 from vendor_alliance import content, jaccard
 from ctxshield.dfc_adapter import TierAModel
 from shield_reader import SHIELD_SKIP_PREFIX, load_session_jsonl      # S25: image-bearing pilot turns kept
+from harness import detect
 from pilot_text import has_paste, own_words                           # S56: pasted blocks are not the pilot's words
 
 PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|asshole\w*|prick\w*|bullshit|wtf|goddamn\w*|damn\w*|dumbass|idiot\w*)\b", re.I)
@@ -232,7 +233,7 @@ class Tracker:
         finally:
             c.close()
 
-    def sync_session(self, jsonl: Path, last_turn_complete: bool, agent: str = 'claude-code') -> Dict[str, int]:
+    def sync_session(self, jsonl: Path, last_turn_complete: bool, agent: str = None) -> Dict[str, int]:
         """Score OUTSIDE any transaction, then write each ~COMMIT_EVERY_S batch in one short transaction: the write lock is
         held for milliseconds, never for the scoring (a 39-s first sync once locked every other window out, S55). Rows are
         write-once (INSERT OR IGNORE, keyed by message uuid) so a crash mid-way loses nothing and the next sync resumes; the
@@ -240,7 +241,9 @@ class Tracker:
         jsonl = Path(jsonl)
         st = jsonl.stat()
         sid = jsonl.stem
-        ex = load_session_jsonl(jsonl)
+        h = detect(jsonl)                          # harness.py: Claude Code transcript, Codex rollout, …
+        agent = h.name if agent is None else agent
+        ex = h.exchanges(jsonl)
         c = self._conn()
         try:
             have_p = {r[0] for r in c.execute("SELECT uuid FROM pilot_turns WHERE session_id=?", (sid,))}
@@ -286,7 +289,7 @@ class Tracker:
                     continue                       # the reply is still being written — recorded when the turn ends
                 if e['assistant_uuid'] and e['assistant_uuid'] not in have_r:
                     if models is None:
-                        models = models_by_uuid(jsonl)
+                        models = h.models(jsonl)
                     blocks = [p for k, p in e['events'] if k == 'text']
                     docs = self.shield.stop_docs(e['user'], blocks)
                     docs['S1'] = [self.shield.pilot_turn_fields(e['user'], ex[:i])]
