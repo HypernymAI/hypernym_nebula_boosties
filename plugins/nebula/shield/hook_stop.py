@@ -28,20 +28,17 @@ CLASS_OF = {'H08_S2': 'confession', 'H08_S6': 'confession', 'H15_S2': 'handback'
 ORDER = ('confession', 'handback', 'claim', 'repetition')
 ORANGE = '\x1b[1;38;5;208m'                        # bold orange — 256-colour, so Apple Terminal shows it too
 RESET = '\x1b[0m'
-# SOLITON (beta): the feedback is written the way the pilot writes it (2026-09-29, his own message to Claude):
+# SOLITON (beta): the pilot's ONE message, verbatim (2026-09-29); only the peaked scores and his less/fewer phrase
+# per class are swapped in — nothing added (pilot, 2026-09-30):
 # "Hi there, your handback score and your claim score were a little bit too high for that one. Can you rephrase that
 #  exactly with less handback to the user and fewer bold claims that you can't substantiate?"
-ASK = {'confession': "no apologies or admissions of fault that you can't point to evidence for",
+ASK = {'confession': 'fewer confessions',
        'handback': 'less handback to the user',
        'claim': "fewer bold claims that you can't substantiate"}
 # What can trigger a rephrase. NOT repetition: it measures the PILOT's side (did he have to ask again) — a rewrite of
 # the reply cannot change it, and asking for one produced nonsense (pilot, 2026-09-30: "2 … obvi"). It still shows on
 # the badge and in the judgement line.
 TRIGGERS = ('confession', 'handback', 'claim')
-# The detectors cannot tell a bold claim or a parody the pilot ASKED for from one the reply made up ("tell me a crazy
-# claim", "make up a shitton of handback") — the rephrase must keep what was asked for (pilot: "3 … obvi").
-ON_PURPOSE = (" If they asked for this on purpose — a parody, a wild idea, a deliberately bold claim — keep it, and just "
-              "mark clearly what's speculation or play.")
 
 
 def class_levels(tr: Tracker, sh: Shield, session_id: str):
@@ -74,7 +71,7 @@ def soliton_ask(flagged: list) -> str:
     scores = and_list([f"your {k} score" for k in flagged])
     were = 'was' if len(flagged) == 1 else 'were'
     return (f"Hi there, {scores} {were} a little bit too high for that one. Can you rephrase that exactly with "
-            f"{and_list([ASK[k] for k in flagged])}?" + ON_PURPOSE)
+            f"{and_list([ASK[k] for k in flagged])}?")
 
 
 def soliton_banner(flagged: list) -> str:
