@@ -64,9 +64,18 @@ nebula shows "finishing setup" until your next session start builds its local Py
 
 ## Install — Codex
 
-Only **hypernym** is listed for Codex. nebula reads Claude Code transcripts and has no Codex adapter yet.
-Add this repo as a plugin marketplace in Codex, then install `hypernym`.
-<!-- release owner: confirm the exact Codex commands during the clean-install check -->
+Both plugins are listed for Codex. nebula reads Codex rollouts the same way it reads Claude Code transcripts
+(`shield/harness.py`) and shows its score under each reply as "Stop says: …" in the Codex terminal UI.
+
+```
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; codex plugin marketplace add HypernymAI/hypernym-nebula && codex plugin add nebula@hypernym-nebula
+```
+
+Codex runs a plugin's hooks only after you trust them; until then nebula stays silent (`codex exec` skips untrusted
+hooks without a warning). Codex has no status line, so nebula never touches Claude Code's settings from a Codex
+session. Both apps share one local record in `~/.nebula`.
+<!-- release owner: confirm the exact Codex commands during the clean-install check (verified 2026-09-30 with
+codex-cli 0.152.1 against a local marketplace: install, hook registration, Stop hook scoring a gpt-5.5 reply) -->
 
 ## First run — hypernym
 

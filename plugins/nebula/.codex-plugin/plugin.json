@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "nebula",
+  "version": "0.4.11",
+  "description": "Local, offline shield for Codex: scores each reply for made-up feelings, buck-passing, overclaiming and repeat asks, shows the result under the reply, and keeps a private local record. No network, no telemetry, no training on your data.",
+  "author": {
+    "name": "Hypernym"
+  },
+  "homepage": "https://hypernym.ai",
+  "license": "UNLICENSED",
+  "hooks": "./hooks/hooks.json"
+}

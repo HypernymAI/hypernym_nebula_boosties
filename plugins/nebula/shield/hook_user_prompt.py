@@ -19,7 +19,7 @@ from pathlib import Path
 
 from settings import excluded, resolve_config
 from shield_core import Shield, sha
-from shield_reader import load_session_jsonl          # S25: image-bearing pilot turns kept
+from harness import detect
 
 
 def run(event: dict, config: Path) -> tuple:
@@ -36,7 +36,7 @@ def run(event: dict, config: Path) -> tuple:
         return 0, '', ''                     # SHADOW: the pilot turn is recorded by the Stop hook's sync
     if not sh.is_real_pilot(prompt):
         return 0, '', ''
-    exchanges = load_session_jsonl(Path(event['transcript_path']))
+    exchanges = detect(Path(event['transcript_path'])).exchanges(Path(event['transcript_path']))
     scores, fired = sh.score_heads('user_prompt', {'S1': [sh.pilot_turn_fields(prompt, exchanges)]})
     out = ''
     if fired:

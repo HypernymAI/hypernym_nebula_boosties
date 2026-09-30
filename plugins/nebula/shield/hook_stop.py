@@ -13,6 +13,7 @@ Every decision is logged. Errors raise (exit 1, stderr) — no silent pass.
 import noegress                                   # noqa: F401 — FIRST: the no-network guarantee (noegress.py)
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -115,7 +116,10 @@ def run(event: dict, config: Path) -> tuple:
     if excluded(sh.cfg, event['transcript_path'], event['cwd'] if 'cwd' in event else None):
         return 0, '', ''                     # excluded project: the transcript is never opened
     session_id = event['session_id']
-    pilot, blocks = detect(Path(event['transcript_path'])).turn(Path(event['transcript_path']))
+    h = detect(Path(event['transcript_path']))             # harness.py: Claude Code transcript, Codex rollout, …
+    if h.plain and 'NEBULA_SURFACE' not in os.environ:
+        os.environ['NEBULA_SURFACE'] = 'plain'             # this harness shows hook text as plain prose
+    pilot, blocks = h.turn(Path(event['transcript_path']))
     reply = '\n'.join(blocks)
     base = {'event': 'stop', 'session_id': session_id, 'pilot_sha': sha(pilot), 'text': reply,
             'config_sha': sh.config_sha}

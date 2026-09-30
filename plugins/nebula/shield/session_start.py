@@ -16,15 +16,19 @@ NO .get(). Imports at top.
 import noegress                                   # noqa: F401 — FIRST: the no-network guarantee (noegress.py)
 import json
 import sys
+from pathlib import Path
 
 import nebula_statusline
 from settings import PLUGIN_ROOT, resolve_config
 
 
 def main() -> None:
-    json.load(sys.stdin)                          # the SessionStart event — consumed, not needed
+    event = json.load(sys.stdin)                  # the SessionStart event: only its transcript path is read
     resolve_config(None)                          # creates ~/.nebula (0700) + the effective config
-    nebula_statusline.auto()                      # refresh the shared launcher; statusLine only if none / ours
+    codex = 'transcript_path' in event and isinstance(event['transcript_path'], str) \
+        and Path(event['transcript_path']).name.startswith('rollout-')
+    if not codex:                                 # Codex (harness.py) has no status line: never edit Claude's settings
+        nebula_statusline.auto()                  # refresh the shared launcher; statusLine only if none / ours
     ready = PLUGIN_ROOT / '.venv' / '.nebula_ready'
     if not ready.exists():
         ready.write_text("the plugin's Python environment is built (written by session_start.py)\n")

@@ -1,7 +1,18 @@
 {
   "name": "hypernym-nebula",
-  "interface": { "displayName": "Hypernym Nebula" },
+  "interface": {
+    "displayName": "Hypernym Nebula"
+  },
   "plugins": [
-    { "name": "hypernym", "source": "./plugins/hypernym", "category": "developer-tools" }
+    {
+      "name": "hypernym",
+      "source": "./plugins/hypernym",
+      "category": "developer-tools"
+    },
+    {
+      "name": "nebula",
+      "source": "./plugins/nebula",
+      "category": "developer-tools"
+    }
   ]
 }
