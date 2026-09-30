@@ -6,6 +6,12 @@ absolute paths into the current plugin version). JSON only — the status-line b
 User-settable keys (anything else raises — no silent ignore):
   enabled           true | false                       kill switch
   mode              "shadow" | "enforce"               shadow = score + record, never interferes
+SOLITON (beta) is NOT a mode in settings.json: it is its own switch, soliton.json {"on": true|false} beside the
+config's own database (~/.nebula/soliton.json for the real one; a test's temporary config has its own, so the pilot's
+switch never leaks into a test — seen 2026-09-30)
+(/nebula:shield-soliton). Reason (2026-09-30): settings.json is shared with every running session, and an older
+version rejects a mode it does not know — "mode": "soliton" there made every session still on the old version fail
+its Stop hook after every reply. Older versions never read soliton.json, so switching it can break nothing.
   show              true | false                       one-line judgement note under each reply
   text_retention    "none" | "excerpt" | "full"        what of the transcript TEXT is kept in the local DB
                                                         (default none: scores + numbers only)
@@ -126,6 +132,25 @@ def resolve_config(explicit: Optional[str]) -> Path:
     tmp.write_text(json.dumps(cfg, indent=1, sort_keys=True) + '\n')
     tmp.replace(EFFECTIVE)
     return EFFECTIVE
+
+
+def soliton_file(cfg: Dict) -> Path:
+    """Soliton's switch for THIS config: beside its database (see the module docstring)."""
+    return Path(cfg['db_path']).expanduser().parent / 'soliton.json'
+
+
+def soliton_on(cfg: Dict) -> bool:
+    f = soliton_file(cfg)
+    return f.exists() and json.loads(f.read_text())['on'] is True
+
+
+def set_soliton(cfg: Dict, on: bool, granted: list) -> None:
+    """granted = the permission rules soliton itself added (customize.py), so turning it off removes exactly those."""
+    f = soliton_file(cfg)
+    f.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = f.with_suffix('.tmp')
+    tmp.write_text(json.dumps({'on': on, 'granted': granted}) + '\n')
+    tmp.replace(f)
 
 
 def private_dir() -> Path:

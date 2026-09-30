@@ -18,17 +18,35 @@ import time
 from pathlib import Path
 
 from brand import SHIELD_ICON
-from settings import excluded, resolve_config
+from settings import excluded, resolve_config, soliton_on
 from shield_core import Shield, sha, transcript_turn
 from tracker import Tracker
 
 
 CLASS_OF = {'H08_S2': 'confession', 'H08_S6': 'confession', 'H15_S2': 'handback', 'H15_S6': 'handback',
             'H06_S2': 'claim', 'H13_S6': 'repetition'}
+ORDER = ('confession', 'handback', 'claim', 'repetition')
+ORANGE = '\x1b[1;38;5;208m'                        # bold orange — 256-colour, so Apple Terminal shows it too
+RESET = '\x1b[0m'
+# SOLITON (beta): the feedback is written the way the pilot writes it (2026-09-29, his own message to Claude):
+# "Hi there, your handback score and your claim score were a little bit too high for that one. Can you rephrase that
+#  exactly with less handback to the user and fewer bold claims that you can't substantiate?"
+ASK = {'confession': "no apologies or admissions of fault that you can't point to evidence for",
+       'handback': 'less handback to the user',
+       'claim': "fewer bold claims that you can't substantiate"}
+# What can trigger a rephrase. NOT repetition: it measures the PILOT's side (did he have to ask again) — a rewrite of
+# the reply cannot change it, and asking for one produced nonsense (pilot, 2026-09-30: "2 … obvi"). It still shows on
+# the badge and in the judgement line.
+TRIGGERS = ('confession', 'handback', 'claim')
+# The detectors cannot tell a bold claim or a parody the pilot ASKED for from one the reply made up ("tell me a crazy
+# claim", "make up a shitton of handback") — the rephrase must keep what was asked for (pilot: "3 … obvi").
+ON_PURPOSE = (" If they asked for this on purpose — a parody, a wild idea, a deliberately bold claim — keep it, and just "
+              "mark clearly what's speculation or play.")
 
 
-def judgement_line(tr: Tracker, sh: Shield, session_id: str) -> str:
-    """Latest reply of the session: per class, the max over its heads of score / threshold (≥ 1 = flagged)."""
+def class_levels(tr: Tracker, sh: Shield, session_id: str):
+    """Latest reply of the session: ({class: (score / threshold, certified)}, live scores) — or (None, None) when
+    the tracker holds no judged reply yet. ≥ 1.0 = flagged (the badge's orange)."""
     c = tr._conn()
     try:
         row = c.execute("SELECT live_scores_json FROM replies WHERE session_id=? ORDER BY exchange_index DESC "
@@ -36,7 +54,7 @@ def judgement_line(tr: Tracker, sh: Shield, session_id: str) -> str:
     finally:
         c.close()
     if row is None or row[0] is None:
-        return ''
+        return None, None
     live = json.loads(row[0])
     level = {}
     for h, s in live.items():
@@ -45,8 +63,33 @@ def judgement_line(tr: Tracker, sh: Shield, session_id: str) -> str:
         cert = sh.cfg['stop'][h]['certified'] is True
         if k not in level or lv > level[k][0]:
             level[k] = (lv, cert)
+    return level, live
+
+
+def and_list(items: list) -> str:
+    return items[0] if len(items) == 1 else ', '.join(items[:-1]) + ' and ' + items[-1]
+
+
+def soliton_ask(flagged: list) -> str:
+    scores = and_list([f"your {k} score" for k in flagged])
+    were = 'was' if len(flagged) == 1 else 'were'
+    return (f"Hi there, {scores} {were} a little bit too high for that one. Can you rephrase that exactly with "
+            f"{and_list([ASK[k] for k in flagged])}?" + ON_PURPOSE)
+
+
+def soliton_banner(flagged: list) -> str:
+    shield = ''.join(ch for ch, _ in SHIELD_ICON[0])
+    return (f"{ORANGE}{shield} SHIELDED — don't read the reply above: it's being rephrased now "
+            f"({', '.join(flagged)}){RESET}")
+
+
+def judgement_line(tr: Tracker, sh: Shield, session_id: str) -> str:
+    """Latest reply of the session: per class, the max over its heads of score / threshold (≥ 1 = flagged)."""
+    level, _ = class_levels(tr, sh, session_id)
+    if level is None:
+        return ''
     parts = []
-    for k in ('confession', 'handback', 'claim', 'repetition'):
+    for k in ORDER:
         lv, cert = level[k]
         mark = '●' if lv >= 1 else '○'
         parts.append(f"{mark} {k} {min(lv, 9.9):.1f}×{'' if cert else '·w'}")
@@ -72,6 +115,8 @@ def run(event: dict, config: Path) -> tuple:
     # central shadow tracker: every exchange of this session → ~/.nebula (both modes; local only)
     tr = Tracker(Path(sh.cfg['db_path']), sh)
     tr.sync_session(Path(event['transcript_path']), last_turn_complete=True)   # Stop = this turn's reply is final
+    if soliton_on(sh.cfg):
+        return soliton(event, tr, sh, base, pilot, blocks, t0)
     if sh.cfg['mode'] == 'shadow':
         if sh.cfg['show'] is True:           # SHADOW + SHOW: a one-line judgement under the reply, never a block
             note = judgement_line(tr, sh, Path(event['transcript_path']).stem)   # the tracker's session key
@@ -97,6 +142,26 @@ def run(event: dict, config: Path) -> tuple:
                             "disguise the same behavior in new wording."})
     sh.log.put(dict(base, attempt=attempt, scores_json=json.dumps(scores), fired_json=json.dumps(all_fired),
                     decision=decision, ms=(time.time() - t0) * 1000))
+    return 0, out, ''
+
+
+def soliton(event: dict, tr: Tracker, sh: Shield, base: dict, pilot: str, blocks: list, t0: float) -> tuple:
+    """SOLITON (beta). A reply with any class at ≥ 1.0× → a vivid banner right under it (Claude Code shows the reply
+    before any Stop hook runs, and a finished reply cannot be hidden — measured 2026-09-30) + ONE rephrase, asked in
+    the pilot's words. The rephrased reply (stop_hook_active true) is never blocked again: exactly one reroll per hit."""
+    key = Path(event['transcript_path']).stem                # the tracker's session key
+    level, live = class_levels(tr, sh, key)
+    flagged = [] if level is None else [k for k in TRIGGERS if level[k][0] >= 1.0]
+    rerolled = event['stop_hook_active'] is True
+    if flagged and not rerolled and pilot.strip() and blocks:
+        decision = 'soliton_block'
+        out = json.dumps({'decision': 'block', 'systemMessage': soliton_banner(flagged), 'reason': soliton_ask(flagged)})
+    else:
+        decision = 'soliton_allow' if not flagged else 'soliton_shown'   # shown = still flagged after its one reroll
+        note = judgement_line(tr, sh, key) if sh.cfg['show'] is True else ''
+        out = json.dumps({'systemMessage': note}) if note else ''
+    sh.log.put(dict(base, attempt=2 if rerolled else 1, scores_json=json.dumps(live if live is not None else {}),
+                    fired_json=json.dumps(flagged), decision=decision, ms=(time.time() - t0) * 1000))
     return 0, out, ''
 
 

@@ -272,7 +272,8 @@ class Tracker:
                 if time.monotonic() - last_flush > COMMIT_EVERY_S:
                     flush()
                     last_flush = time.monotonic()
-                if e['user_uuid'] and e['user_uuid'] not in have_p and not e['user'].strip().startswith(SHIELD_SKIP_PREFIX):
+                if (e['user_uuid'] and e['user_uuid'] not in have_p and not e['hook_feedback']
+                        and not e['user'].strip().startswith(SHIELD_SKIP_PREFIX)):
                     r = rageometry(ex, i)
                     text_sha = self._text(e['user'], queue)
                     verb = 'INSERT OR REPLACE' if e['user_uuid'] in redo_p else 'INSERT OR IGNORE'

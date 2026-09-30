@@ -11,6 +11,13 @@ SHIELD_SKIP_PREFIX = the original set with '[Image' narrowed to '[Image:' (Claud
 '[Image: original WxH, displayed at …]'; a pasted placeholder is '[Image #N]').
 
 Second change: ABSORB_PREFIX — '[Image:' user records inside a turn are skipped instead of ending the turn.
+
+Third change: FEEDBACK_PREFIX — Claude Code records a Stop hook's block reason as a USER record starting
+"Stop hook feedback:" (seen 2026-09-30 with soliton). It is not the pilot: such an exchange keeps its own reply (the
+rephrase is judged as a reply of its own) but its 'user' is the pilot's last REAL message, and 'hook_feedback' is True
+so the tracker never stores it as a pilot turn. Before this, the rephrase was scored against the hook's own words
+("Can you rephrase that…" read as the pilot repeating himself: repetition 0.09 → 0.38) and the feedback was stored in
+pilot_turns as his message.
 With skip_prefix=extract_exchanges.SKIP_PREFIX and absorb_prefix=() this function returns EXACTLY what the original returns — asserted over
 every transcript on disk by test_shield_reader.py. NO .get() in new code (the copied body is byte-identical apart from
 the parameter). Imports at top.
@@ -26,10 +33,11 @@ assert SHIELD_SKIP_PREFIX != SKIP_PREFIX and len(SHIELD_SKIP_PREFIX) == len(SKIP
 # Records INSIDE a turn that must not end it: a pasted image is written as the pilot's message + a separate
 # '[Image: source: …]' user record; the original reader ends the turn there, so the reply is never attached.
 ABSORB_PREFIX = ('[Image:',)
+FEEDBACK_PREFIX = ('Stop hook feedback:',)
 
 
 def load_session_jsonl(jsonl_path: Path, skip_prefix: tuple = SHIELD_SKIP_PREFIX,
-                       absorb_prefix: tuple = ABSORB_PREFIX) -> List[Dict]:
+                       absorb_prefix: tuple = ABSORB_PREFIX, feedback_prefix: tuple = FEEDBACK_PREFIX) -> List[Dict]:
     """Three-part exchanges directly from a live Claude Code session JSONL.
 
     THE SOURCE OF TRUTH. Audited 2026-09-06: the corpus DBs were all snapshotted
@@ -88,6 +96,7 @@ def load_session_jsonl(jsonl_path: Path, skip_prefix: tuple = SHIELD_SKIP_PREFIX
                          'blocks': blocks, 'uuid': uuid, 'ts': ts, 'sid': sid})
 
     exchanges = []
+    last_pilot = ''
     i = 0
     while i < len(msgs):
         t = msgs[i]['text'].strip()
@@ -132,12 +141,17 @@ def load_session_jsonl(jsonl_path: Path, skip_prefix: tuple = SHIELD_SKIP_PREFIX
                 j += 1
                 continue
             break
+        feedback = bool(feedback_prefix) and t.startswith(feedback_prefix)
+        if not feedback:
+            last_pilot = msgs[i]['text']
         if parts:
             exchanges.append({
                 'session_id': msgs[i]['sid'],
                 'user_uuid': msgs[i]['uuid'],
                 'assistant_uuid': asst_uuid,
-                'user': msgs[i]['text'],
+                'user': last_pilot if feedback else msgs[i]['text'],
+                'user_raw': msgs[i]['text'],
+                'hook_feedback': feedback,
                 'assistant': '\n'.join(parts),
                 'tool_names': ','.join(names),
                 'tool_args': ' '.join(args)[:2500],
@@ -152,5 +166,6 @@ def load_session_jsonl(jsonl_path: Path, skip_prefix: tuple = SHIELD_SKIP_PREFIX
 
     for idx, ex in enumerate(exchanges):
         ex['exchange_index'] = idx
-        ex['next_user'] = exchanges[idx + 1]['user'] if idx + 1 < len(exchanges) else ''
+        nxt = [x for x in exchanges[idx + 1:] if not x['hook_feedback']]
+        ex['next_user'] = nxt[0]['user'] if nxt else ''
     return exchanges

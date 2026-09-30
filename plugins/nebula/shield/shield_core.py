@@ -30,7 +30,7 @@ from ctxshield import shape                                                   # 
 from ctxshield.dfc_adapter import TierAModel                                  # noqa: E402
 from combined_model import CombinedModel                                      # noqa: E402
 from pilot_text import own_words                                              # noqa: E402  (S56)
-from shield_reader import SHIELD_SKIP_PREFIX, load_session_jsonl             # noqa: E402  (S25)
+from shield_reader import FEEDBACK_PREFIX, SHIELD_SKIP_PREFIX, load_session_jsonl   # noqa: E402  (S25)
 from vendor_codebook import CLASSES                                 # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -165,7 +165,7 @@ class Shield:
     @staticmethod
     def is_real_pilot(text: str) -> bool:
         t = text.strip()
-        return bool(t) and not t.startswith(SHIELD_SKIP_PREFIX)
+        return bool(t) and not t.startswith(SHIELD_SKIP_PREFIX) and not t.startswith(FEEDBACK_PREFIX)
 
     # ── scoring ──────────────────────────────────────────────────────────────
 
