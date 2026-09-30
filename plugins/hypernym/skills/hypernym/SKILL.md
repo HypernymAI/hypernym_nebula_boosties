@@ -1,6 +1,6 @@
 ---
 name: hypernym
-description: Hypernym repo analysis for the git repo you are working in — check floats and repo-analyze jobs, submit a repo analyze, download the finished package, report how far it has drifted from the current code, and load it into the session. Use when the user says "hypernym help" or "hypernym login" (sign in to Hypernym/Zephyr — use this skill's login, never a hand-written curl), asks about floats, float status, repo analyze, a Hypernym package or treatment prompt, or wants Hypernym context for this repo loaded.
+description: Hypernym repo analysis for the git repo you are working in — check floats and repo-analyze jobs, submit a repo analyze, download the finished package, report how far it has drifted from the current code, and load it into the session. Use when the user says "hypernym go", "hypernym analyze", "hypernym do it" or "yes" to a Hypernym offer (start an analysis of this repo now), "hypernym help" or "hypernym login" (sign in to Hypernym/Zephyr — use this skill's login, never a hand-written curl), asks about floats, float status, repo analyze, a Hypernym package or treatment prompt, or wants Hypernym context for this repo loaded.
 ---
 
 # Hypernym
@@ -11,6 +11,17 @@ absolute path to this skill's directory:
 ```bash
 python3 <this skill's directory>/scripts/hypernym.py --dir "$PWD" <command>
 ```
+
+## "hypernym go" — start an analysis
+
+"hypernym go", "hypernym analyze", "hypernym do it", or "yes" to your Hypernym offer all mean: start it now.
+Call the `hypernym_analyze` tool with `execute: true`. If the user described a task, pass it as `question`;
+otherwise leave `question` out and the whole repo is analyzed. Don't ask them anything first — Hypernym's approval
+dialog shows what is sent, the cost and who pays, and it is their only decision.
+- Submitted: one line — "Started. I'll keep working and switch to the analysis when it's ready (about 40 minutes)."
+- Cancelled: one line — "Not started; nothing was sent. Say 'hypernym go' whenever you want it."
+- Finished: it downloads by itself; load it yourself when the work touches this code and say once:
+  "The Hypernym analysis for this repo is ready — I'm using it now." Never ask the user to run load, sync or wait.
 
 ## "What does this do?" — `about`
 
@@ -44,10 +55,9 @@ If a package exists, offer to load it.
 
 ## Run repo analyze
 
-1. Get the question from the user: the bug, feature, or area they want the package to cover. Do not
-   invent one. You may first ask with AskUserQuestion (multiple choice, with a preview) for the question's focus
-   and the file count — 20, 40 (default) or 80 files; the count is the most credits it can use. These only shape
-   the dry run; the approval dialog below is still the final gate.
+1. The focus: the user's current task if they described one; otherwise none, and the whole repo is analyzed (see
+   "hypernym go" above — never make the user answer a question before an analysis can start). The file count is
+   40 unless they ask for another; it is the most credits it can use. The approval dialog is the final gate.
 2. Dry run first — always. It submits nothing and shows exactly what would be sent, the cost (up to N new floats =
    up to N credits), who pays (the account this machine acts as), and **what is not on GitHub**: the server reads
    the pushed commit, so commits not pushed, uncommitted edits and untracked files are described in their GitHub

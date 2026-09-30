@@ -15,7 +15,7 @@ the server name only when more than one server is configured):
     ⢤⣶⡾ analyzing… 12/40 files                 a job running: floats completed/total
     ⢤⣶⡾ analysis in use                        THIS session loaded this repo's package (~/.hypernym/sessions/<id>.json)
     ⢤⣶⡾ analysis ready                         a package is on disk that this session has not loaded yet
-    ⢤⣶⡾ no analysis for this repo              signed in, nothing for this repo
+    ⢤⣶⡾ not analyzed yet — say "hypernym go"   signed in, nothing for this repo
     not a git repo / no github remote          as before
 A server error that is none of these (unreachable, HTTP 5xx) is shown as it is — never hidden.
 
@@ -126,7 +126,7 @@ def render(c: dict, session_id: str, key: str, stale: bool, icon: str) -> str:
         elif c['newest_package'] is not None:
             parts.append(f"{GREEN}analysis ready{RESET}")
         else:
-            parts.append(f"{GREY}no analysis for this repo{RESET}")
+            parts.append(f"{GREY}not analyzed yet — say \"hypernym go\"{RESET}")
     tail = ''
     if stale:
         tail = f" {DIM}⟳{RESET}"

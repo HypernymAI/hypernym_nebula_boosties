@@ -20,6 +20,7 @@ GitHub repo, and nothing when HYPERNYM_SESSION_CONTEXT=0. NO .get().
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import hypernym
@@ -33,14 +34,37 @@ def load_command(cwd: str) -> str:
     return f'python3 "{HERE / "hypernym.py"}" --dir "{cwd}" load'
 
 
-def package_lines(info: dict, cwd: str) -> list:
+INVITED = hypernym.HOME / 'invited'
+START_PHRASES = ('"hypernym go", "hypernym analyze", "hypernym do it", or "yes" to your Hypernym offer')
+
+
+def first_time_here(info: dict) -> bool:
+    """True the first time a session starts in this repo on this computer (the invite is shown once per repo)."""
+    marker = INVITED / info['key_lower'].replace('/', '__')
+    if marker.exists():
+        return False
+    INVITED.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(time.time()))
+    return True
+
+
+def package_lines(info: dict, cwd: str, source: str) -> list:
     pkgs = hypernym.list_packages(info)
     if not pkgs:
         if not hypernym.load_servers():
             return []
-        return [f"Hypernym: no analysis for {info['key']} on this computer yet. Offer one only when the task is about "
-                "this repo's code; submitting shows the user Hypernym's approval dialog, which is their only decision. "
-                "Finished analyses download by themselves."]
+        start = (f"When the user says {START_PHRASES}, start it right away: call the hypernym_analyze tool with "
+                 "execute=true (pass their current task as the question if they described one; otherwise omit it and "
+                 "the whole repo is analyzed). Don't ask them anything first: the approval dialog shows the cost and is "
+                 "their only decision. After Submit, tell them in one line that it started and you'll keep working and "
+                 "switch to it when it's ready (about 40 minutes); after Cancel, one line that nothing was sent.")
+        if source == 'startup' and first_time_here(info):
+            return [f"Hypernym: {info['key']} hasn't been analyzed yet (first session here). In your first reply, add "
+                    "ONE short line inviting the user, then carry on with what they asked: \"Hypernym can analyze this "
+                    "repo so I work from a compressed map of the code that matters — ready in about 40 minutes. Say "
+                    "'hypernym go' to start.\"", start]
+        return [f"Hypernym: {info['key']} hasn't been analyzed yet. Don't bring it up unless the task is about this "
+                "repo's code.", start]
     pkg = pkgs[0]
     m = json.loads((pkg / 'manifest.json').read_text())
     d = hypernym.drift(info, m)
@@ -52,8 +76,8 @@ def package_lines(info: dict, cwd: str) -> list:
             behind += 's'
     lines = [
         f"Hypernym: an analysis for {info['key']} is ready on this computer. Load it yourself when the work touches "
-        f"this repo's code (loading sends nothing anywhere; never ask the user to run load, sync or wait): "
-        f"{load_command(cwd)}",
+        f"this repo's code (loading sends nothing anywhere; never ask the user to run load, sync or wait), and tell "
+        f"them in one line: \"The Hypernym analysis for this repo is ready — I'm using it now.\" {load_command(cwd)}",
         f"Newest: job {m['job_id']} from {m['server']}, commit {m['commit'][:12]} ({behind} behind HEAD), "
         f"completed {m['completed_at_utc']}, {m['metadata']['prompt_tokens']} tokens covering "
         f"{m['metadata']['files_selected']} files.",
@@ -104,7 +128,7 @@ def main() -> None:
     if payload['source'] == 'compact':
         lines = reload_lines(payload, info, cwd)
     else:
-        lines = package_lines(info, cwd)
+        lines = package_lines(info, cwd, payload['source'])
     if not lines:
         return
     text = '\n'.join(lines)

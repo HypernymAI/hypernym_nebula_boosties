@@ -352,6 +352,9 @@ def describe(info: dict, pkg: Path) -> list:
 
 # ---------------------------------------------------------------- commands
 
+# The focus when the person just says "hypernym go" (no task named): the repo itself.
+WHOLE_REPO_FOCUS = "The repository as a whole: its main parts, how they fit together, and where the core logic lives."
+
 # What the two plugins are, in the Pilot's words (Hypernym and Nebula capitalized in prose, lowercase in commands).
 ABOUT = (
     "Nebula — the local shield: flags fabricated confession, decision hand-back, claims beyond evidence and forced "
@@ -506,7 +509,7 @@ def cmd_analyze(args, servers):
     if args.question_file:
         question = Path(args.question_file).read_text()
     if not question or not question.strip():
-        sys.exit("a question is required: --question TEXT or --question-file FILE")
+        question = WHOLE_REPO_FOCUS
     commit = args.commit
     if not commit:
         commit = newest_pushed_commit(info['root'])
@@ -531,7 +534,7 @@ def cmd_analyze(args, servers):
         print(f"  repo:      {info['url']}")
         print(f"  commit:    {commit}")
         print(f"  top_n:     {args.top_n}   per_float_budget: {args.budget}")
-        print(f"  question:  {question}")
+        print(f"  focus:     {question}")
         print(f"  cost:      up to {args.top_n} new floats = up to {args.top_n} credits (files the server has "
               "compressed before cost nothing)")
         print(f"  paid by:   {payer}")

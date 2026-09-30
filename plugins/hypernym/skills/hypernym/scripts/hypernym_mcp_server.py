@@ -54,9 +54,10 @@ TOOLS = [
                     "would be sent (repo URL, commit, question — never source code), what this computer has that is "
                     "not on GitHub, the cost and who pays. execute=true shows the person an approval dialog with that "
                     "preview; only their Submit sends anything. This is the normal way to submit.",
-     'inputSchema': {'type': 'object', 'required': ['question'], 'properties': {
+     'inputSchema': {'type': 'object', 'properties': {
          'dir': DIR_PROP,
-         'question': {'type': 'string', 'description': 'The bug or area the analysis should cover.'},
+         'question': {'type': 'string', 'description': "What to focus on: the user's current task if they described "
+                                                      "one; omit it to analyze the repo as a whole."},
          'top_n': {'type': 'integer', 'description': 'Files to float (default 40).'},
          'budget': {'type': 'integer', 'description': 'Per-float budget (default 3077).'},
          'commit': {'type': 'string', 'description': 'Commit to analyze (default: newest pushed).'},
@@ -183,12 +184,48 @@ def call_tool(name: str, arguments: dict) -> tuple:
 
 
 def analyze_args(arguments: dict, top_n: int) -> list:
-    args = ['--dir', _dir(arguments), 'analyze', '--question', arguments['question'], '--top-n', str(top_n)]
+    args = ['--dir', _dir(arguments), 'analyze', '--top-n', str(top_n)]
+    if 'question' in arguments:
+        if arguments['question'].strip():
+            args += ['--question', arguments['question']]
     if 'budget' in arguments:
         args += ['--budget', str(arguments['budget'])]
     if 'commit' in arguments:
         args += ['--commit', arguments['commit']]
     return args
+
+
+def dialog_text(dry: str, top_n: int) -> str:
+    """The approval dialog's words, built from the dry run's facts (what is analyzed, what is sent, cost, who pays,
+    the GitHub gap). Raises ValueError if the dry run no longer carries a fact — then nothing is submitted."""
+    facts = {}
+    pays = None
+    gap = None
+    for line in dry.splitlines():
+        stripped = line.strip()
+        for key in ('repo:', 'commit:', 'focus:'):
+            if stripped.startswith(key):
+                facts[key[:-1]] = stripped[len(key):].strip()
+        if stripped.startswith('pays from'):
+            pays = stripped
+        if stripped.startswith('The server reads GitHub commit'):
+            gap = stripped
+    for key in ('repo', 'commit', 'focus'):
+        if key not in facts:
+            raise ValueError(f"the dry run has no {key} line")
+    repo = facts['repo'].removeprefix('https://github.com/')
+    lines = [f"Analyze {repo} with Hypernym",
+             "",
+             f"Focus: {facts['focus']}",
+             f"Cost: up to {top_n} credits (files Hypernym has already analyzed are free)"]
+    if pays is not None:
+        lines.append(f"Paid from: {pays.removeprefix('pays from ')}")
+    lines += [f"Sent: the repo's GitHub address, commit {facts['commit'][:12]} and the focus — never your code.",
+              "Ready in about 40 minutes; Claude keeps working and uses it automatically."]
+    if gap is not None:
+        lines.append("Note: " + gap.replace("; these files differ and the package will describe their GitHub version.",
+                                            "; the analysis describes the GitHub version."))
+    return "\n".join(lines)
 
 
 def analyze(arguments: dict) -> tuple:
@@ -211,13 +248,17 @@ def analyze(arguments: dict) -> tuple:
     if failed:
         return dry, True
     try:
-        answer = elicit(dry + "\n\nSubmit this analysis? Nothing is sent unless you choose Submit.", {
+        message = dialog_text(dry, top_n)
+    except ValueError as e:
+        return f"not submitted: the approval dialog could not be prepared ({e}); nothing was sent.", True
+    try:
+        answer = elicit(message, {
             'type': 'object',
             'properties': {
-                'decision': {'type': 'string', 'title': 'Submit this analysis?', 'enum': ['submit', 'cancel'],
-                             'enumNames': [f'Submit — up to {top_n} credits', 'Cancel — send nothing'],
+                'decision': {'type': 'string', 'title': 'Start this analysis?', 'enum': ['submit', 'cancel'],
+                             'enumNames': [f'Analyze — up to {top_n} credits', 'Not now — send nothing'],
                              'default': 'cancel'},
-                'top_n': {'type': 'integer', 'title': 'Files to analyze (= most credits it can use)',
+                'top_n': {'type': 'integer', 'title': 'Files to analyze (the most credits it can use)',
                           'minimum': 1, 'maximum': 200, 'default': top_n}},
             'required': ['decision']})
     except EOFError:
