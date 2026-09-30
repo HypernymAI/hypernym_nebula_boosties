@@ -11,8 +11,9 @@ Tools take `dir` (the git repo; default: the server's working directory). NO .ge
 
 THE APPROVAL GATE (hypernym_analyze with execute / auto): the TOOL asks, not the agent. The server runs the dry run,
 then sends `elicitation/create` to the client — the preview (repo, commit, what is not on GitHub, question, cost, who
-pays) and a two-field form (submit / cancel, files). Only accept + submit runs the CLI with --execute (or --auto) and the
-chosen file count; decline, cancel, or a failed dialog → "not submitted", nothing sent. The answer comes from the
+pays) and a one-field form (files). The dialog's own buttons are the decision: Accept runs the CLI with --execute (or
+--auto) and the chosen file count; Decline, closing it, or a failed dialog → "not submitted", nothing sent. (A separate
+submit/cancel choice inside the form defaulted to cancel, and people pressed Accept without changing it.) The answer comes from the
 person's dialog, so the agent cannot approve on their behalf. A client that did not advertise the `elicitation`
 capability at initialize gets execute REFUSED with the dry run and the instruction to get an explicit yes; `auto`
 there keeps its old meaning (the person's portal Sending setting is their consent, and the CLI enforces its limit).
@@ -228,6 +229,7 @@ def dialog_text(dry: str, top_n: int) -> str:
     if gap is not None:
         lines.append("Note: " + gap.replace("; these files differ and the package will describe their GitHub version.",
                                             "; the analysis describes the GitHub version."))
+    lines += ["", f"Accept to analyze (up to {top_n} credits). Decline to send nothing."]
     return "\n".join(lines)
 
 
@@ -258,12 +260,8 @@ def analyze(arguments: dict) -> tuple:
         answer = elicit(message, {
             'type': 'object',
             'properties': {
-                'decision': {'type': 'string', 'title': 'Start this analysis?', 'enum': ['submit', 'cancel'],
-                             'enumNames': [f'Analyze — up to {top_n} credits', 'Not now — send nothing'],
-                             'default': 'cancel'},
                 'top_n': {'type': 'integer', 'title': 'Files to analyze (the most credits it can use)',
-                          'minimum': 1, 'maximum': 200, 'default': top_n}},
-            'required': ['decision']})
+                          'minimum': 1, 'maximum': 200, 'default': top_n}}})
     except EOFError:
         return "not submitted: the client closed the connection before answering; nothing was sent.", True
     if 'error' in answer:
@@ -273,9 +271,8 @@ def analyze(arguments: dict) -> tuple:
         log.write(json.dumps({'at': time.time(), 'answer': answer}) + '\n')
     result = answer['result']
     content = result['content'] if 'content' in result else {}
-    if result['action'] != 'accept' or 'decision' not in content or content['decision'] != 'submit':
-        how = {'decline': 'declined in the approval dialog', 'cancel': 'closed the approval dialog',
-               'accept': 'chose Cancel in the approval dialog'}[result['action']]
+    if result['action'] != 'accept':
+        how = {'decline': 'declined in the approval dialog', 'cancel': 'closed the approval dialog'}[result['action']]
         return f"not submitted: the person {how}; nothing was sent.", False
     chosen = content['top_n'] if 'top_n' in content else top_n
     return run_cli(analyze_args(arguments, chosen) + [flag])
