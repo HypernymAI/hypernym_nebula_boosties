@@ -1,7 +1,7 @@
 """
 nebula settings: SHIPPED DEFAULTS (plugin/shield/defaults.json, replaced on every plugin update) ⊕ the USER's
-SETTINGS (~/.nebula/settings.json, never touched by an update) → the EFFECTIVE config (~/.nebula/config.json,
-absolute paths into the current plugin version). JSON only — the status-line badge imports this, so it stays light.
+SETTINGS (~/.nebula/settings.json, never touched by an update) → the EFFECTIVE config (~/.nebula/config.json, or
+config.codex.json for a Codex install; absolute paths into the current plugin version). JSON only — the status-line badge imports this, so it stays light.
 
 User-settable keys (anything else raises — no silent ignore):
   enabled           true | false                       kill switch
@@ -32,7 +32,20 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = PLUGIN_ROOT / 'shield' / 'defaults.json'
 USER_DIR = Path.home() / '.nebula'
 USER_SETTINGS = USER_DIR / 'settings.json'
-EFFECTIVE = USER_DIR / 'config.json'
+
+
+def _codex_install() -> bool:
+    """This copy was installed by Codex (<CODEX_HOME>/plugins/cache/…), not Claude Code (~/.claude/plugins/cache/…)."""
+    home = Path(os.environ['CODEX_HOME']).expanduser().resolve() if 'CODEX_HOME' in os.environ \
+        else (Path.home() / '.codex').resolve()
+    return home in PLUGIN_ROOT.parents
+
+
+# ONE effective config per app. It holds absolute paths into the copy that built it, and every hook rebuilds it when
+# PLUGIN_ROOT differs — with a Claude Code copy and a Codex copy installed, each app's hooks rewrote the other's on
+# every call (2026-09-30: Claude's config pointed into the Codex cache after one Codex turn). Both apps still share
+# settings.json, the database and soliton.json. The status line reads config.json only (Claude Code has one).
+EFFECTIVE = USER_DIR / ('config.codex.json' if _codex_install() else 'config.json')
 
 RETENTION = ('none', 'excerpt', 'full')
 MODES = ('shadow', 'enforce')
