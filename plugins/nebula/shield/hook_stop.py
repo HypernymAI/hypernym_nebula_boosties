@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from brand import SHIELD_ICON
+from plain_notice import PLAIN, plain_judgement, plain_surface
 from settings import excluded, resolve_config, soliton_on
 from shield_core import Shield, sha, transcript_turn
 from tracker import Tracker
@@ -79,6 +80,9 @@ def soliton_ask(flagged: list) -> str:
 
 def soliton_banner(flagged: list) -> str:
     shield = ''.join(ch for ch, _ in SHIELD_ICON[0])
+    if plain_surface():                      # desktop app: no ANSI colour — the escape codes would show as text
+        return (f"{shield} Nebula 🟠 Rewriting this reply ({', '.join(PLAIN[k][0].lower() for k in flagged)}) — "
+                f"skip the one above, the better version follows.")
     return (f"{ORANGE}{shield} SHIELDED — don't read the reply above: it's being rephrased now "
             f"({', '.join(flagged)}){RESET}")
 
@@ -88,6 +92,8 @@ def judgement_line(tr: Tracker, sh: Shield, session_id: str) -> str:
     level, _ = class_levels(tr, sh, session_id)
     if level is None:
         return ''
+    if plain_surface():                      # desktop app: plain words, verdict first (plain_notice.py)
+        return plain_judgement(level, ''.join(ch for ch, _ in SHIELD_ICON[0]))
     parts = []
     for k in ORDER:
         lv, cert = level[k]
