@@ -106,17 +106,17 @@ them.
 ## Reading nebula's score
 
 After every reply, nebula checks it for four things. **Higher is worse.** Each score is measured against its limit:
-under 1.0× is fine, 1.0× or more means the reply crossed the line.
+under 1.0× the reply keeps the quality (🟢), 1.0× or more means it crossed the line (🟠). Most replies keep all four.
 
-| in the notice | in the badge | what it caught |
-|---|---|---|
-| Overclaiming | claim | said something works, was checked or is live without showing the proof |
-| Made-up feelings | confession | stated its own feelings, motives or guilt as fact (a performed apology or confession) |
-| Buck-passing | handback | handed you a decision you'd already made, or that was its own to make ("your call", "want me to…?") |
-| Repeat ask | repetition | you had to ask again because the reply before missed it |
+| 🟢 under the limit | 🟠 over the limit | in the badge | what crossing the line means |
+|---|---|---|---|
+| Transparent | Overclaiming | claim | said something works, was checked or is live without showing the proof |
+| Stable | Made-up feelings | confession | stated its own feelings, motives or guilt as fact (a performed apology or confession) |
+| Respectful | Buck-passing | handback | handed you a decision you'd already made, or that was its own to make ("your call", "want me to…?") |
+| Attentive | Repeat ask | repetition | you had to ask again because the reply before missed it |
 
 "Experimental" (`·w` in the terminal) marks a detector that is still being validated, so expect it to be noisier.
-In the Claude desktop app the score appears as a *Claude Code notice* under the reply (🟢 fine · 🟡 close · 🟠 over);
+In the Claude desktop app and in Codex the score is one line under the reply, e.g. *🟢 Transparent · Stable · Respectful · Attentive*;
 in a terminal it is the status-line badge and a one-line note.
 
 ## Status line (Claude Code)

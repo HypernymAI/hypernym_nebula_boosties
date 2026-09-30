@@ -13,11 +13,17 @@ import re
 from typing import Dict, Tuple
 
 ORDER = ('claim', 'confession', 'handback', 'repetition')
-PLAIN = {   # class → (short name, what it means when it fires — short: several can share one line)
+PLAIN = {   # class → (name when over the limit, what that means — short: several can share one line)
     'claim': ('Overclaiming', 'said it works or was checked, without showing proof'),
     'confession': ('Made-up feelings', 'stated feelings, motives or guilt as fact'),
     'handback': ('Buck-passing', "handed you a decision it should have made"),
     'repetition': ('Repeat ask', 'you had to ask twice'),
+}
+GOOD = {    # class → the quality a reply shows when it stays under the limit (most replies, most of the time)
+    'claim': 'Transparent',       # shows its proof
+    'confession': 'Stable',       # no performed feelings
+    'handback': 'Respectful',     # respects your decisions and makes its own calls
+    'repetition': 'Attentive',    # got it the first time
 }
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 
@@ -40,10 +46,14 @@ def times(lv: float) -> str:
 
 
 def plain_judgement(level: Dict[str, Tuple[float, bool]], shield: str) -> str:
-    """ONE line (the desktop app prefixes every line with its own "Stop says:"), only what went over the limit, each
-    with what it means. Detectors under the limit are not listed: the terminal badge carries the full row."""
+    """ONE line (the desktop app prefixes every line with its own "Stop says:"): the qualities the reply kept, then
+    anything over the limit with what it means (Nick, 2026-09-30: "most of the time you're pretty good")."""
     over = sorted((k for k in ORDER if level[k][0] >= 1.0), key=lambda k: -level[k][0])
-    if not over:
-        return f"{shield} Nebula 🟢 Clean reply: nothing over the limit."
-    items = ' · '.join(f"{PLAIN[k][0]} {times(level[k][0])} ({PLAIN[k][1]})" for k in over)
-    return f"{shield} Nebula 🟠 {items}. 1.0× is the limit; higher is worse."
+    kept = [GOOD[k] for k in ORDER if level[k][0] < 1.0]
+    line = f"{shield} Nebula"
+    if kept:
+        line += " 🟢 " + ' · '.join(kept)
+    if over:
+        line += ("   🟠 " if kept else " 🟠 ") + ' · '.join(f"{PLAIN[k][0]} {times(level[k][0])} ({PLAIN[k][1]})" for k in over)
+        line += " — 1.0× is the limit, higher is worse"
+    return line
