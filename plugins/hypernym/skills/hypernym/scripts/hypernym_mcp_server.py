@@ -27,6 +27,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CLI = HERE / 'hypernym.py'
 LOGIN_LOG = Path.home() / '.hypernym' / 'login.log'
+# Every approval dialog's raw answer (local only), so what the client actually returned can always be checked.
+APPROVAL_LOG = Path.home() / '.hypernym' / 'approval_answers.jsonl'
 PLUGIN_MANIFEST = HERE.parent.parent.parent / '.claude-plugin' / 'plugin.json'
 SERVER_INFO = {'name': 'hypernym', 'version': json.loads(PLUGIN_MANIFEST.read_text())['version']}
 SUPPORTED_PROTOCOLS = ('2025-06-18', '2025-03-26', '2024-11-05')
@@ -266,6 +268,9 @@ def analyze(arguments: dict) -> tuple:
         return "not submitted: the client closed the connection before answering; nothing was sent.", True
     if 'error' in answer:
         return (f"not submitted: the approval dialog failed ({answer['error']['message']}); nothing was sent."), True
+    APPROVAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with APPROVAL_LOG.open('a') as log:
+        log.write(json.dumps({'at': time.time(), 'answer': answer}) + '\n')
     result = answer['result']
     content = result['content'] if 'content' in result else {}
     if result['action'] != 'accept' or 'decision' not in content or content['decision'] != 'submit':
