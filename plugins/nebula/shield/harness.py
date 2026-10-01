@@ -14,6 +14,7 @@ Apps without a transcript (Amble, a web chat, a voice loop) use bridge.py instea
 NO .get().
 """
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -39,6 +40,14 @@ class ClaudeCode:
 
 
 CLAUDE_CODE = ClaudeCode()
+
+
+QUESTION_REPLY = '<send_user_message_question_reply>'
+MY_REQUEST = re.compile(r'^## My request[^\n]*(?:\n|$)', re.M)
+ATTACHMENTS_ONLY = '(attachments only)'          # a turn with files attached and nothing typed under the heading
+# Turns Codex records as the user's though nobody typed them (no client_id on their UserMessage item):
+# automation heartbeats, and Amble's prompts sent through the Codex app server.
+NOT_TYPED = ('<heartbeat>', '[Clock:')
 
 
 def _texts(content) -> List[str]:
@@ -71,11 +80,36 @@ class Codex:
                     yield d
 
     @staticmethod
+    def own_words(text: str) -> str:
+        """What the person typed in a Codex Desktop user turn. The app puts other text in the same turn: attached files,
+        the in-app browser page, referenced ChatGPT chats and response annotations (which quote Codex's own reply) all
+        sit above a '## My request:' heading; a question reply is JSON pairing Codex's question with the person's
+        answer. Measured 2026-09-30 on 1,521 local turns: 464 had the heading (17 with the request past 1,200 chars),
+        66 were question replies."""
+        t = text.strip()
+        if t.startswith(QUESTION_REPLY):
+            body = t[len(QUESTION_REPLY):].rsplit('</send_user_message_question_reply>', 1)[0]
+            try:
+                items = json.loads(body)
+            except ValueError:
+                return t
+            return '\n'.join(i['answer'] for i in items if isinstance(i, dict) and 'answer' in i
+                             and isinstance(i['answer'], str)).strip()
+        m = MY_REQUEST.search(t)
+        if m:
+            return t[m.end():].strip()
+        if t.startswith('<in-app-browser-context') and '</in-app-browser-context>' in t:
+            return t.split('</in-app-browser-context>', 1)[1].strip()
+        return t
+
+    @staticmethod
     def _user_kind(p: Dict) -> str:
-        """'pilot' | 'hook' | '' (injected context) for a role-user message."""
+        """'pilot' | 'hook' | '' (injected context, or a turn nobody typed) for a role-user message."""
         text = '\n'.join(_texts(p['content'] if 'content' in p else [])).strip()
         if text.startswith('<hook_prompt'):
             return 'hook'
+        if text.startswith(NOT_TYPED):
+            return ''
         meta = p['internal_chat_message_metadata_passthrough'] if 'internal_chat_message_metadata_passthrough' in p \
             else None
         if isinstance(meta, dict) and 'content_item_kinds' in meta:
@@ -105,7 +139,8 @@ class Codex:
                 if p['role'] == 'user':
                     k = self._user_kind(p)
                     if k:
-                        msgs.append({'kind': k, 'text': text, 'uuid': mid, 'ts': ts})
+                        said = (self.own_words(text) or ATTACHMENTS_ONLY) if k == 'pilot' else text
+                        msgs.append({'kind': k, 'text': said, 'uuid': mid, 'ts': ts})
                 elif p['role'] == 'assistant' and text.strip():
                     msgs.append({'kind': 'text', 'text': text, 'uuid': mid, 'ts': ts, 'model': model})
             elif t == 'response_item' and pt in ('function_call', 'custom_tool_call'):
