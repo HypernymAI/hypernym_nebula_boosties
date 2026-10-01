@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from brand import ZEPHYR_ICON, icon_flash
+from brand import ZEPHYR_ICON, gentle_phase, icon_flash
 
 HERE = Path(__file__).resolve().parent
 STATUS = Path.home() / '.hypernym' / 'status'
@@ -124,7 +124,9 @@ def server_state(s: dict):
 
 # ---- live gauges while a job runs (the Pilot's design, 2026-10-01): a braille clock ticking every second, one tiny
 # power bar per running float, a sparkline of the fastest float's ETA (baby blue → deep blue) and a sparkline of the
-# whole remaining job's ETA (Hypernym shiny). The line re-renders every second, so the clock and shine move.
+# whole remaining job's ETA (Hypernym shiny). They MOVE only at the normal once-in-a-while moment (pilot,
+# 2026-10-01: "it should only animate at the normal once in a while"): the logo's gentle flash (brand.gentle_phase —
+# every 10-15 min, ~8 s). At rest the clock holds one glyph and the shine holds its colours; the values still update.
 CLOCK = '⠈⠐⠠⢀⡀⠄⠂⠁'
 BARS = '▁▂▃▄▅▆▇█'
 BABY_BLUE, DEEP_BLUE = (150, 210, 255), (10, 40, 160)
@@ -168,7 +170,8 @@ def rest_etas(history: list) -> list:
 
 
 def live_gauges(j: dict, now: float) -> str:
-    parts = [rgb((200, 200, 200), CLOCK[int(now) % len(CLOCK)])]
+    moving = gentle_phase(now, 1.0)[0] == 'shiny'
+    parts = [rgb((200, 200, 200), CLOCK[int(now) % len(CLOCK)] if moving else CLOCK[0])]
     if 'active' in j and j['active']:
         bars = ''.join(rgb(lerp((90, 170, 110), (120, 255, 150), a['overall']),
                            BARS[min(len(BARS) - 1, int(a['overall'] * len(BARS)))]) for a in j['active'])
@@ -183,7 +186,7 @@ def live_gauges(j: dict, now: float) -> str:
         rest = rest_etas(j['history'])
         if len(rest) >= 2:
             glyphs = spark(rest)
-            shift = int(now * 3)
+            shift = int(now * 3) if moving else 0
             parts.append(''.join(rgb(SHINY[(i + shift) % len(SHINY)], g) for i, g in enumerate(glyphs))
                          + rgb(SHINY[shift % len(SHINY)], f" {short_eta(rest[-1])}"))
     return ' ' + ' '.join(parts)
