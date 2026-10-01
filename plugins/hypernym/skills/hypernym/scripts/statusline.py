@@ -17,7 +17,9 @@ the server name only when more than one server is configured):
     ⢤⣶⡾ stopped at server gate 1 after file ranking   the server holds the job at a dry-run gate
     ⢤⣶⡾ analysis failed at float files — <error>      the newest job failed or was cancelled
     ⢤⣶⡾ analysis in use                        THIS session loaded this repo's package (~/.hypernym/sessions/<id>.json)
-    ⢤⣶⡾ analysis ready                         a package is on disk that this session has not loaded yet
+    ⢤⣶⡾ analysis ready · 2 commits behind      WORKS: every selected file analyzed AND the whole package auto-loaded
+    ⢤⣶⡾ ⚠ alpha: analysis partial — 30/40 files   some files never analyzed (amber)
+    ⢤⣶⡾ ⚠ alpha: analysis on disk, not loaded into sessions   autoload off or not current (amber)
     ⢤⣶⡾ not analyzed yet — say "hypernym go"   signed in, nothing for this repo
     not a git repo / no github remote          as before
 A server error that is none of these (unreachable, HTTP 5xx) is shown as it is — never hidden.
@@ -192,6 +194,24 @@ def live_gauges(j: dict, now: float) -> str:
     return ' ' + ' '.join(parts)
 
 
+def package_state(p: dict, used: bool) -> str:
+    """Green "analysis ready" ONLY when it works properly: every selected file was analyzed AND the whole package is
+    in context (autoload import current). Anything less is an amber alpha warning naming what is missing (the Pilot,
+    2026-10-01). Commits behind HEAD is shown as information, not as a failure. Caches written before these fields
+    existed fall back to the plain old wording."""
+    behind = ''
+    if p['commits_behind']:
+        behind = f" · {p['commits_behind']} commit{'s' if p['commits_behind'] != 1 else ''} behind"
+    if 'floats_completed' in p and p['floats_completed'] < p['files_selected']:
+        return (f"{AMBER}⚠ alpha: analysis partial — {p['floats_completed']}/{p['files_selected']} files"
+                f"{behind}{RESET}")
+    if 'autoload' in p and not p['autoload']:
+        return f"{AMBER}⚠ alpha: analysis on disk, not loaded into sessions{behind}{RESET}"
+    if used:
+        return f"{GREEN}analysis in use{RESET}{DIM}{behind}{RESET}"
+    return f"{GREEN}analysis ready{RESET}{DIM}{behind}{RESET}"
+
+
 def render(c: dict, session_id: str, key: str, stale: bool, icon: str) -> str:
     many = len(c['servers']) > 1
     parts = []
@@ -203,10 +223,8 @@ def render(c: dict, session_id: str, key: str, stale: bool, icon: str) -> str:
             if st is not None:
                 parts.append(f"{st[0]}{s['name'] + ' ' if many else ''}{st[1]}{RESET}")
     if not parts:
-        if in_use(session_id, key):
-            parts.append(f"{GREEN}analysis in use{RESET}")
-        elif c['newest_package'] is not None:
-            parts.append(f"{GREEN}analysis ready{RESET}")
+        if c['newest_package'] is not None:
+            parts.append(package_state(c['newest_package'], in_use(session_id, key)))
         else:
             parts.append(f"{GREY}not analyzed yet — say \"hypernym go\"{RESET}")
     tail = ''

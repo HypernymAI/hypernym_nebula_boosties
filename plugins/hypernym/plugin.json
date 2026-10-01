@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "hypernym",
-  "version": "0.7.18",
+  "version": "0.7.19",
   "description": "Hypernym tools for Codex: repo analyze for the current repo: floats, jobs, packages with drift.",
   "author": { "name": "Hypernym" },
   "homepage": "https://hypernym.ai",

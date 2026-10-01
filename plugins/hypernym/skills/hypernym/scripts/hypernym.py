@@ -290,7 +290,93 @@ def fetch(server: dict, info: dict, job_id: str) -> Path:
         'metadata': job['result']['metadata'], 'files': files,
     }
     (pkg / 'manifest.json').write_text(json.dumps(manifest, indent=1))
+    install_autoload(info, list_packages(info)[0])
     return pkg
+
+
+# ---------------------------------------------------------------- autoload (the whole package, every session)
+# Tool and hook output never fit a package: Bash returns 30,000 chars, MCP 25,000 tokens, a SessionStart hook 10,000
+# chars — the rest goes to a file the model never reads. A CLAUDE.md @-import is expanded IN FULL at launch and
+# re-injected in full after every compaction (verified 2026-10-01: a fresh tool-less session, and the same session
+# after /compact, quoted the package's first line and its last section). So the newest package is copied to
+# <repo>/.hypernym/treatment_prompt.md and <repo>/CLAUDE.local.md imports it. Both stay local (.git/info/exclude);
+# other content of CLAUDE.local.md is kept — only the marked block is written. HYPERNYM_AUTOLOAD=0 turns it off.
+AUTOLOAD_BEGIN = '<!-- hypernym:autoload begin -->'
+AUTOLOAD_END = '<!-- hypernym:autoload end -->'
+LOCAL_COPY = Path('.hypernym') / 'treatment_prompt.md'
+AUTOLOAD_BLOCK = (f"{AUTOLOAD_BEGIN}\n"
+                  "# Hypernym analysis (local, auto-loaded)\n\n"
+                  "The Hypernym analysis of this repo is imported below in full. It describes the repo at the commit "
+                  "named in its first line; for any file that has changed since, trust the working tree over it.\n\n"
+                  f"@{LOCAL_COPY.as_posix()}\n"
+                  f"{AUTOLOAD_END}\n")
+
+
+def autoload_enabled() -> bool:
+    if 'HYPERNYM_AUTOLOAD' in os.environ:
+        return os.environ['HYPERNYM_AUTOLOAD'] != '0'
+    return True
+
+
+def autoload_header(m: dict) -> str:
+    return (f"Hypernym analysis package — job {m['job_id']}, commit {m['commit'][:12]}, completed "
+            f"{m['completed_at_utc']}, {m['metadata']['prompt_tokens']} tokens (written by hypernym; replaced when a "
+            f"newer package lands)\n")
+
+
+def autoload_current(info: dict, pkg: Path) -> bool:
+    """The import block is in CLAUDE.local.md and the local copy is this package."""
+    local = info['root'] / 'CLAUDE.local.md'
+    copy = info['root'] / LOCAL_COPY
+    if not local.exists() or not copy.exists() or AUTOLOAD_BEGIN not in local.read_text():
+        return False
+    with open(copy) as f:
+        first = f.readline()
+    return first == autoload_header(json.loads((pkg / 'manifest.json').read_text()))
+
+
+def install_autoload(info: dict, pkg: Path) -> bool:
+    """Make `pkg` the analysis every Claude Code session in this repo starts with. Returns True when it changed."""
+    if not autoload_enabled() or autoload_current(info, pkg):
+        return False
+    root = info['root']
+    m = json.loads((pkg / 'manifest.json').read_text())
+    copy = root / LOCAL_COPY
+    copy.parent.mkdir(exist_ok=True)
+    tmp = copy.with_suffix('.tmp')
+    tmp.write_text(autoload_header(m) + '\n' + (pkg / 'treatment_prompt.txt').read_text())
+    tmp.replace(copy)
+    local = root / 'CLAUDE.local.md'
+    text = ''
+    if local.exists():
+        text = local.read_text()
+    if AUTOLOAD_BEGIN in text and AUTOLOAD_END in text:
+        before = text.split(AUTOLOAD_BEGIN, 1)[0]
+        after = text.split(AUTOLOAD_END, 1)[1].lstrip('\n')
+        text = before + AUTOLOAD_BLOCK + after
+    else:
+        if text and not text.endswith('\n'):
+            text += '\n'
+        if text:
+            text += '\n'
+        text += AUTOLOAD_BLOCK
+    local.write_text(text)
+    exclude = git(root, 'rev-parse', '--git-path', 'info/exclude').stdout.strip()
+    if exclude:
+        ex = Path(exclude)
+        if not ex.is_absolute():
+            ex = root / ex
+        ex.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        if ex.exists():
+            lines = ex.read_text().splitlines()
+        add = [e for e in ('CLAUDE.local.md', '.hypernym/') if e not in lines]
+        if add:
+            with open(ex, 'a') as f:
+                if lines and not ex.read_text().endswith('\n'):
+                    f.write('\n')
+                f.write('\n'.join(add) + '\n')
+    return True
 
 
 def iso(ts: float) -> str:
@@ -957,6 +1043,11 @@ def cmd_load(args, servers):
             sys.exit(f"no packages for {info['key']}; run analyze first")
         pkg = pkgs[0]
     print('\n'.join(describe(info, pkg)))
+    if autoload_enabled():
+        install_autoload(info, pkg)
+        print(f"\nautoload: CLAUDE.local.md imports {info['root'] / LOCAL_COPY} — the whole package is in context in "
+              "every new session here and after every compaction. Output below this line is truncated by the tool "
+              "(30K chars via Bash, 25K tokens via MCP); the import is what carries the full text.")
     print(f"\n===== {pkg / 'treatment_prompt.txt'} =====\n")
     print((pkg / 'treatment_prompt.txt').read_text())
 
@@ -1060,7 +1151,10 @@ def cmd_statuscache(args, servers):
         m = json.loads((pkgs[0] / 'manifest.json').read_text())
         d = drift(info, m)
         out['newest_package'] = {'job_id': m['job_id'], 'changed': len(d['changed']) + len(d['missing']),
-                                 'files': d['files'], 'commits_behind': d['commits_behind']}
+                                 'files': d['files'], 'commits_behind': d['commits_behind'],
+                                 'files_selected': m['metadata']['files_selected'],
+                                 'floats_completed': m['metadata']['floats_completed'],
+                                 'autoload': autoload_enabled() and autoload_current(info, pkgs[0])}
     target = HOME / 'status' / f"{info['key_lower'].replace('/', '__')}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix('.tmp')
