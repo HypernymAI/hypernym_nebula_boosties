@@ -13,6 +13,10 @@ What it prints is the agent's context (plain stdout, the one form both Claude Co
     only decision)
   - after a compaction (source=compact): ONLY if this session had loaded a package (~/.hypernym/sessions/<session_id>.json,
     written by record_load.py) — "load it again now", with the exact command; otherwise nothing
+  - AUTOLOAD (default; HYPERNYM_AUTOLOAD=0 turns it off): the newest package is imported in full by <repo>/CLAUDE.local.md
+    (hypernym.install_autoload), so every session starts with all of it and compaction re-injects all of it. Then the
+    startup line says it is already in context, and after a compaction the user sees one line:
+    "Hypernym analysis reloaded after compaction — job …, N tokens, commit …"
 
 Local only: reads ~/.hypernym and runs git. Never calls the network, never submits anything. Prints nothing outside a
 GitHub repo, and nothing when HYPERNYM_SESSION_CONTEXT=0. NO .get().
@@ -74,10 +78,25 @@ def package_lines(info: dict, cwd: str, source: str) -> list:
         behind = f"{d['commits_behind']} commit"
         if d['commits_behind'] != 1:
             behind += 's'
+    if hypernym.autoload_enabled():
+        if hypernym.autoload_current(info, pkg):
+            head = (f"Hypernym: this repo's full analysis is already in your context — imported in full through "
+                    f"CLAUDE.local.md (@{hypernym.LOCAL_COPY.as_posix()}). Use it; do not run load, and never ask the "
+                    "user to.")
+        else:
+            hypernym.install_autoload(info, pkg)
+            head = (f"Hypernym: this repo's newest analysis was just set up to load in full in every session here "
+                    f"(CLAUDE.local.md imports {hypernym.LOCAL_COPY.as_posix()}), but this session started before it. "
+                    f"Read {info['root'] / hypernym.LOCAL_COPY} in full now, before replying (every chunk; it is "
+                    f"{m['metadata']['prompt_tokens']} tokens). From the next session and after any compaction it "
+                    "is in context automatically.")
+    else:
+        head = (f"Hypernym: an analysis for {info['key']} is ready on this computer. Load it yourself when the work "
+                f"touches this repo's code (loading sends nothing anywhere; never ask the user to run load, sync or "
+                f"wait), and tell them in one line: \"The Hypernym analysis for this repo is ready — I'm using it now.\" "
+                f"{load_command(cwd)}")
     lines = [
-        f"Hypernym: an analysis for {info['key']} is ready on this computer. Load it yourself when the work touches "
-        f"this repo's code (loading sends nothing anywhere; never ask the user to run load, sync or wait), and tell "
-        f"them in one line: \"The Hypernym analysis for this repo is ready — I'm using it now.\" {load_command(cwd)}",
+        head,
         f"Newest: job {m['job_id']} from {m['server']}, commit {m['commit'][:12]} ({behind} behind HEAD), "
         f"completed {m['completed_at_utc']}, {m['metadata']['prompt_tokens']} tokens covering "
         f"{m['metadata']['files_selected']} files.",
@@ -126,6 +145,20 @@ def main() -> None:
     except SystemExit:
         return  # not a git repo, or not a GitHub one: Hypernym has nothing to say here
     if payload['source'] == 'compact':
+        pkgs = hypernym.list_packages(info)
+        if pkgs and hypernym.autoload_enabled() and hypernym.autoload_current(info, pkgs[0]):
+            # The import already put the whole package back after the summary; say so to the user, without noise.
+            m = json.loads((pkgs[0] / 'manifest.json').read_text())
+            print(json.dumps({
+                'systemMessage': (f"Hypernym analysis reloaded after compaction — job {m['job_id'][:13]}…, "
+                                  f"{m['metadata']['prompt_tokens']:,} tokens, commit {m['commit'][:7]}"),
+                'hookSpecificOutput': {
+                    'hookEventName': 'SessionStart',
+                    'additionalContext': ("Hypernym: compaction kept this repo's full analysis — it is re-imported "
+                                          "through CLAUDE.local.md. Use it; do not run load."),
+                },
+            }))
+            return
         lines = reload_lines(payload, info, cwd)
     else:
         lines = package_lines(info, cwd, payload['source'])

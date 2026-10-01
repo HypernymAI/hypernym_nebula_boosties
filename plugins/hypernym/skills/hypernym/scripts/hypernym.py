@@ -290,7 +290,93 @@ def fetch(server: dict, info: dict, job_id: str) -> Path:
         'metadata': job['result']['metadata'], 'files': files,
     }
     (pkg / 'manifest.json').write_text(json.dumps(manifest, indent=1))
+    install_autoload(info, list_packages(info)[0])
     return pkg
+
+
+# ---------------------------------------------------------------- autoload (the whole package, every session)
+# Tool and hook output never fit a package: Bash returns 30,000 chars, MCP 25,000 tokens, a SessionStart hook 10,000
+# chars — the rest goes to a file the model never reads. A CLAUDE.md @-import is expanded IN FULL at launch and
+# re-injected in full after every compaction (verified 2026-10-01: a fresh tool-less session, and the same session
+# after /compact, quoted the package's first line and its last section). So the newest package is copied to
+# <repo>/.hypernym/treatment_prompt.md and <repo>/CLAUDE.local.md imports it. Both stay local (.git/info/exclude);
+# other content of CLAUDE.local.md is kept — only the marked block is written. HYPERNYM_AUTOLOAD=0 turns it off.
+AUTOLOAD_BEGIN = '<!-- hypernym:autoload begin -->'
+AUTOLOAD_END = '<!-- hypernym:autoload end -->'
+LOCAL_COPY = Path('.hypernym') / 'treatment_prompt.md'
+AUTOLOAD_BLOCK = (f"{AUTOLOAD_BEGIN}\n"
+                  "# Hypernym analysis (local, auto-loaded)\n\n"
+                  "The Hypernym analysis of this repo is imported below in full. It describes the repo at the commit "
+                  "named in its first line; for any file that has changed since, trust the working tree over it.\n\n"
+                  f"@{LOCAL_COPY.as_posix()}\n"
+                  f"{AUTOLOAD_END}\n")
+
+
+def autoload_enabled() -> bool:
+    if 'HYPERNYM_AUTOLOAD' in os.environ:
+        return os.environ['HYPERNYM_AUTOLOAD'] != '0'
+    return True
+
+
+def autoload_header(m: dict) -> str:
+    return (f"Hypernym analysis package — job {m['job_id']}, commit {m['commit'][:12]}, completed "
+            f"{m['completed_at_utc']}, {m['metadata']['prompt_tokens']} tokens (written by hypernym; replaced when a "
+            f"newer package lands)\n")
+
+
+def autoload_current(info: dict, pkg: Path) -> bool:
+    """The import block is in CLAUDE.local.md and the local copy is this package."""
+    local = info['root'] / 'CLAUDE.local.md'
+    copy = info['root'] / LOCAL_COPY
+    if not local.exists() or not copy.exists() or AUTOLOAD_BEGIN not in local.read_text():
+        return False
+    with open(copy) as f:
+        first = f.readline()
+    return first == autoload_header(json.loads((pkg / 'manifest.json').read_text()))
+
+
+def install_autoload(info: dict, pkg: Path) -> bool:
+    """Make `pkg` the analysis every Claude Code session in this repo starts with. Returns True when it changed."""
+    if not autoload_enabled() or autoload_current(info, pkg):
+        return False
+    root = info['root']
+    m = json.loads((pkg / 'manifest.json').read_text())
+    copy = root / LOCAL_COPY
+    copy.parent.mkdir(exist_ok=True)
+    tmp = copy.with_suffix('.tmp')
+    tmp.write_text(autoload_header(m) + '\n' + (pkg / 'treatment_prompt.txt').read_text())
+    tmp.replace(copy)
+    local = root / 'CLAUDE.local.md'
+    text = ''
+    if local.exists():
+        text = local.read_text()
+    if AUTOLOAD_BEGIN in text and AUTOLOAD_END in text:
+        before = text.split(AUTOLOAD_BEGIN, 1)[0]
+        after = text.split(AUTOLOAD_END, 1)[1].lstrip('\n')
+        text = before + AUTOLOAD_BLOCK + after
+    else:
+        if text and not text.endswith('\n'):
+            text += '\n'
+        if text:
+            text += '\n'
+        text += AUTOLOAD_BLOCK
+    local.write_text(text)
+    exclude = git(root, 'rev-parse', '--git-path', 'info/exclude').stdout.strip()
+    if exclude:
+        ex = Path(exclude)
+        if not ex.is_absolute():
+            ex = root / ex
+        ex.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        if ex.exists():
+            lines = ex.read_text().splitlines()
+        add = [e for e in ('CLAUDE.local.md', '.hypernym/') if e not in lines]
+        if add:
+            with open(ex, 'a') as f:
+                if lines and not ex.read_text().endswith('\n'):
+                    f.write('\n')
+                f.write('\n'.join(add) + '\n')
+    return True
 
 
 def iso(ts: float) -> str:
@@ -365,7 +451,7 @@ ABOUT = (
 )
 INSTALL_LINES = (
     "Install both: command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin "
-    "marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin "
+    "marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula && claude plugin "
     "install hypernym@hypernym-nebula, then restart Claude Code once",
     "Update: claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && "
     "claude plugin update hypernym@hypernym-nebula",
@@ -567,6 +653,7 @@ def cmd_analyze(args, servers):
     if args.auto:
         record_auto_spend(args.top_n)
     print(f"submitted {r['job_id']} to {server['name']}: {r['status']} at {r['stage']}")
+    cmd_statuscache(args, servers)  # the status line shows the new job on its next tick, not up to REFRESH_S later
     print(f"it runs on the server; check with: hypernym.py wait {r['job_id']}  (or hypernym.py help later)")
 
 
@@ -956,14 +1043,67 @@ def cmd_load(args, servers):
             sys.exit(f"no packages for {info['key']}; run analyze first")
         pkg = pkgs[0]
     print('\n'.join(describe(info, pkg)))
+    if autoload_enabled():
+        install_autoload(info, pkg)
+        print(f"\nautoload: CLAUDE.local.md imports {info['root'] / LOCAL_COPY} — the whole package is in context in "
+              "every new session here and after every compaction. Output below this line is truncated by the tool "
+              "(30K chars via Bash, 25K tokens via MCP); the import is what carries the full text.")
     print(f"\n===== {pkg / 'treatment_prompt.txt'} =====\n")
     print((pkg / 'treatment_prompt.txt').read_text())
+
+
+HISTORY_POINTS = 30
+
+
+def active_float_progress(server: dict, detail: dict) -> list:
+    """Per-float progress of this job's floats that are running now: [{'overall': 0..1, 'eta_seconds': s or None}]."""
+    if 'files' not in detail:
+        return []
+    running = {f['float_id'] for f in detail['files'] if f['status'] == 'PROCESSING'}
+    if not running:
+        return []
+    out = []
+    for f in call(server, "/api/floats?limit=100&status=PROCESSING")['floats']:
+        if f['float_id'] not in running:
+            continue
+        p = call(server, f"/api/float/{f['response_id']}/status")['progress']
+        eta = None
+        if isinstance(p['trial_info'], dict) and 'eta_seconds' in p['trial_info']:
+            eta = p['trial_info']['eta_seconds']
+        out.append({'overall': p['overall'], 'eta_seconds': eta})
+    return out
+
+
+def job_history(previous, server_name: str, job: dict) -> list:
+    """The last HISTORY_POINTS samples [t, fastest_eta_s or None, job_fraction_done] for this job, carried across refreshes."""
+    hist = []
+    if previous is not None:
+        for s in previous['servers']:
+            if s['name'] != server_name:
+                continue
+            for pj in s['jobs']:
+                if pj['job_id'] == job['job_id'] and 'history' in pj:
+                    hist = pj['history']
+    etas = [a['eta_seconds'] for a in job['active'] if a['eta_seconds'] is not None]
+    fastest = None
+    if etas:
+        fastest = min(etas)
+    done = job['floats_completed'] + sum(a['overall'] for a in job['active'])
+    fraction = 0.0
+    if job['floats_total']:
+        fraction = done / job['floats_total']
+    hist = hist + [[time.time(), fastest, fraction]]
+    return hist[-HISTORY_POINTS:]
 
 
 def cmd_statuscache(args, servers):
     """Write ~/.hypernym/status/<owner__repo>.json for the status line (refreshed in the background)."""
     info = repo_info(args.dir)
     out = {'repo': info['key'], 'refreshed_at': time.time(), 'servers': []}
+    previous = None
+    prev_file = HOME / 'status' / f"{info['key_lower'].replace('/', '__')}.json"
+    if prev_file.exists():
+        previous = json.loads(prev_file.read_text())
     policy = cached_policy()
     if portal_of(servers) is not None:
         if policy is None or time.time() - policy['fetched_at'] > POLICY_FRESH_SECONDS:
@@ -990,6 +1130,12 @@ def cmd_statuscache(args, servers):
                     if 'float_progress' in detail and detail['float_progress']:
                         job['floats_total'] = detail['float_progress']['total']
                         job['floats_completed'] = detail['float_progress']['completed']
+                        job['active'] = active_float_progress(server, detail)
+                        job['history'] = job_history(previous, server['name'], job)
+                if j['status'] in ('FAILED', 'CANCELLED') or j['status'].startswith('DRY_RUN_GATE'):
+                    detail = call(server, f"/api/repo/analyze/{j['job_id']}")
+                    if 'error' in detail and detail['error']:
+                        job['error'] = str(detail['error'])[:120]
                 if j['status'] == 'COMPLETED' and existing_package(info, j['job_id']) is None:
                     fetch(server, info, j['job_id'])
                 entry['jobs'].append(job)
@@ -1005,7 +1151,10 @@ def cmd_statuscache(args, servers):
         m = json.loads((pkgs[0] / 'manifest.json').read_text())
         d = drift(info, m)
         out['newest_package'] = {'job_id': m['job_id'], 'changed': len(d['changed']) + len(d['missing']),
-                                 'files': d['files'], 'commits_behind': d['commits_behind']}
+                                 'files': d['files'], 'commits_behind': d['commits_behind'],
+                                 'files_selected': m['metadata']['files_selected'],
+                                 'floats_completed': m['metadata']['floats_completed'],
+                                 'autoload': autoload_enabled() and autoload_current(info, pkgs[0])}
     target = HOME / 'status' / f"{info['key_lower'].replace('/', '__')}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix('.tmp')
