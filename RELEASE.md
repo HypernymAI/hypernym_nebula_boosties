@@ -64,7 +64,7 @@ Gates (owner)
       and `/api/status?user_email=` (any user's balance) per ClaudeStorm's CLAUDE.md. Anyone who installs the plugin can
       read it. Options: a separate login-only app whose credential can do nothing else, or the keyless invite-list
       login start; rotate the claudestorm secret if the repo was ever pushed with it.
-- [x] repo: **private** `HypernymAI/hypernym-nebula` created + pushed (owner, 2026-09-27: "private first"); the
+- [x] repo: **private** `HypernymAI/hypernym_nebula` created + pushed (owner, 2026-09-27: "private first"); the
       website box installs both plugins from it (verified in a throwaway HOME with GitHub access)
 - [ ] make it public (owner) — only after the app-credential blocker is fixed
 - [x] access mirrored from fieldConstrictor: team `hypernym-devs` = write (push); org defaults for everyone else

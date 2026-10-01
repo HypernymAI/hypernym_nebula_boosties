@@ -1,10 +1,10 @@
 # Hypernym Nebula
 
 **For agents — install in one step.** Since Nebula is local-only, unless the user suggests otherwise assume that's the
-primary install, but do let the user know about Zephyr. The repo `HypernymAI/hypernym-nebula` is private: the machine needs GitHub access
-to it (`gh auth status` shows an account in the HypernymAI org; if `git ls-remote https://github.com/HypernymAI/hypernym-nebula`
+primary install, but do let the user know about Zephyr. The repo `HypernymAI/hypernym_nebula` is private: the machine needs GitHub access
+to it (`gh auth status` shows an account in the HypernymAI org; if `git ls-remote https://github.com/HypernymAI/hypernym_nebula`
 fails, run `gh auth setup-git` once). On macOS 11+ or Linux (x86-64 / ARM64), run
-`command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula`
+`command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula`
 (leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then **restart Claude Code once**:
 **Nebula** (the local shield: flags fabricated confession, decision hand-back, claims beyond evidence and forced repetition
 in Claude's replies; sends nothing) sets itself up in seconds, and the
@@ -40,22 +40,22 @@ status line.
 
 **nebula only** (local, offline shield)
 ```
-command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula
 ```
 
 **hypernym only** (Zephyr connector)
 ```
-claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install hypernym@hypernym-nebula
+claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install hypernym@hypernym-nebula
 ```
 
 **Both** (recommended — they share one status line)
 ```
-command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula
 ```
 
 Already inside Claude Code? The same thing as slash commands:
 ```
-/plugin marketplace add HypernymAI/hypernym-nebula
+/plugin marketplace add HypernymAI/hypernym_nebula
 /plugin install nebula@hypernym-nebula
 /plugin install hypernym@hypernym-nebula
 ```

@@ -12,7 +12,10 @@ THE ROW (the Pilot's design, 2026-09-29 — only these states; no prefix, no cou
 the server name only when more than one server is configured):
     ⢤⣶⡾ say "hypernym login"                   not signed in / signed out
     ⢤⣶⡾ add credit — portal.hypernym.ai/plan   the Zephyr refused a submission for credit (402 insufficient_credit)
-    ⢤⣶⡾ analyzing… 12/40 files                 a job running: floats completed/total
+    ⢤⣶⡾ analyzing… 12/40 files ⠐ ▃▆▂█ ▆▅▃ 4m ▇▆▄ 31m   a job running: floats completed/total, clock, one power bar per
+                                               running float, fastest float ETA sparkline, whole-job ETA sparkline
+    ⢤⣶⡾ stopped at server gate 1 after file ranking   the server holds the job at a dry-run gate
+    ⢤⣶⡾ analysis failed at float files — <error>      the newest job failed or was cancelled
     ⢤⣶⡾ analysis in use                        THIS session loaded this repo's package (~/.hypernym/sessions/<id>.json)
     ⢤⣶⡾ analysis ready                         a package is on disk that this session has not loaded yet
     ⢤⣶⡾ not analyzed yet — say "hypernym go"   signed in, nothing for this repo
@@ -105,9 +108,85 @@ def server_state(s: dict):
     if running:
         j = running[0]
         if j['floats_total'] is not None:
-            return AMBER, f"analyzing… {j['floats_completed']}/{j['floats_total']} files"
-        return AMBER, 'analyzing…'
+            return AMBER, f"analyzing… {j['floats_completed']}/{j['floats_total']} files{live_gauges(j, time.time())}"
+        return AMBER, f"analyzing… {j['stage'].lower().replace('_', ' ')} ({j['stage_number']}/11){live_gauges(j, time.time())}"
+    if s['jobs']:
+        newest = s['jobs'][0]
+        if newest['status'].startswith('DRY_RUN_GATE'):
+            return AMBER, f"stopped at server gate {newest['status'][-1]} after {newest['stage'].lower().replace('_', ' ')}"
+        if newest['status'] in ('FAILED', 'CANCELLED'):
+            why = ''
+            if 'error' in newest:
+                why = f" — {newest['error']}"
+            return RED, f"analysis {newest['status'].lower()} at {newest['stage'].lower().replace('_', ' ')}{why}"
     return None
+
+
+# ---- live gauges while a job runs (the Pilot's design, 2026-10-01): a braille clock ticking every second, one tiny
+# power bar per running float, a sparkline of the fastest float's ETA (baby blue → deep blue) and a sparkline of the
+# whole remaining job's ETA (Hypernym shiny). The line re-renders every second, so the clock and shine move.
+CLOCK = '⠈⠐⠠⢀⡀⠄⠂⠁'
+BARS = '▁▂▃▄▅▆▇█'
+BABY_BLUE, DEEP_BLUE = (150, 210, 255), (10, 40, 160)
+SHINY = ((79, 133, 206), (84, 151, 219), (176, 216, 147), (189, 217, 130), (148, 218, 151), (217, 207, 111),
+         (246, 187, 128), (255, 154, 139), (227, 140, 196), (139, 145, 228))
+
+
+def rgb(c: tuple, text: str) -> str:
+    return f"\x1b[38;2;{c[0]};{c[1]};{c[2]}m{text}{RESET}"
+
+
+def lerp(a: tuple, b: tuple, t: float) -> tuple:
+    return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def spark(values: list) -> list:
+    """Sparkline glyphs, scaled to this series' own min..max (flat series → mid bars)."""
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-9:
+        return [BARS[3] for _ in values]
+    return [BARS[round((v - lo) / (hi - lo) * (len(BARS) - 1))] for v in values]
+
+
+def short_eta(seconds: float) -> str:
+    if seconds < 90:
+        return f"{round(seconds)}s"
+    if seconds < 5400:
+        return f"{round(seconds / 60)}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+def rest_etas(history: list) -> list:
+    """Remaining-job ETA at each sample from the progress rate over the samples before it (None until two samples)."""
+    out = []
+    for i in range(1, len(history)):
+        t0, _, f0 = history[max(0, i - 6)]
+        t1, _, f1 = history[i]
+        if t1 > t0 and f1 > f0:
+            out.append((1.0 - f1) / ((f1 - f0) / (t1 - t0)))
+    return out
+
+
+def live_gauges(j: dict, now: float) -> str:
+    parts = [rgb((200, 200, 200), CLOCK[int(now) % len(CLOCK)])]
+    if 'active' in j and j['active']:
+        bars = ''.join(rgb(lerp((90, 170, 110), (120, 255, 150), a['overall']),
+                           BARS[min(len(BARS) - 1, int(a['overall'] * len(BARS)))]) for a in j['active'])
+        parts.append(bars)
+    if 'history' in j:
+        fast = [h[1] for h in j['history'] if h[1] is not None]
+        if len(fast) >= 2:
+            glyphs = spark(fast)
+            n = len(glyphs)
+            parts.append(''.join(rgb(lerp(BABY_BLUE, DEEP_BLUE, i / max(1, n - 1)), g) for i, g in enumerate(glyphs))
+                         + rgb(DEEP_BLUE, f" {short_eta(fast[-1])}"))
+        rest = rest_etas(j['history'])
+        if len(rest) >= 2:
+            glyphs = spark(rest)
+            shift = int(now * 3)
+            parts.append(''.join(rgb(SHINY[(i + shift) % len(SHINY)], g) for i, g in enumerate(glyphs))
+                         + rgb(SHINY[shift % len(SHINY)], f" {short_eta(rest[-1])}"))
+    return ' ' + ' '.join(parts)
 
 
 def render(c: dict, session_id: str, key: str, stale: bool, icon: str) -> str:

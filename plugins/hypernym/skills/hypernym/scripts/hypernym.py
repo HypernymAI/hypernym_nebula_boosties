@@ -365,7 +365,7 @@ ABOUT = (
 )
 INSTALL_LINES = (
     "Install both: command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin "
-    "marketplace add HypernymAI/hypernym-nebula && claude plugin install nebula@hypernym-nebula && claude plugin "
+    "marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula && claude plugin "
     "install hypernym@hypernym-nebula, then restart Claude Code once",
     "Update: claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && "
     "claude plugin update hypernym@hypernym-nebula",
@@ -567,6 +567,7 @@ def cmd_analyze(args, servers):
     if args.auto:
         record_auto_spend(args.top_n)
     print(f"submitted {r['job_id']} to {server['name']}: {r['status']} at {r['stage']}")
+    cmd_statuscache(args, servers)  # the status line shows the new job on its next tick, not up to REFRESH_S later
     print(f"it runs on the server; check with: hypernym.py wait {r['job_id']}  (or hypernym.py help later)")
 
 
@@ -960,10 +961,58 @@ def cmd_load(args, servers):
     print((pkg / 'treatment_prompt.txt').read_text())
 
 
+HISTORY_POINTS = 30
+
+
+def active_float_progress(server: dict, detail: dict) -> list:
+    """Per-float progress of this job's floats that are running now: [{'overall': 0..1, 'eta_seconds': s or None}]."""
+    if 'files' not in detail:
+        return []
+    running = {f['float_id'] for f in detail['files'] if f['status'] == 'PROCESSING'}
+    if not running:
+        return []
+    out = []
+    for f in call(server, "/api/floats?limit=100&status=PROCESSING")['floats']:
+        if f['float_id'] not in running:
+            continue
+        p = call(server, f"/api/float/{f['response_id']}/status")['progress']
+        eta = None
+        if isinstance(p['trial_info'], dict) and 'eta_seconds' in p['trial_info']:
+            eta = p['trial_info']['eta_seconds']
+        out.append({'overall': p['overall'], 'eta_seconds': eta})
+    return out
+
+
+def job_history(previous, server_name: str, job: dict) -> list:
+    """The last HISTORY_POINTS samples [t, fastest_eta_s or None, job_fraction_done] for this job, carried across refreshes."""
+    hist = []
+    if previous is not None:
+        for s in previous['servers']:
+            if s['name'] != server_name:
+                continue
+            for pj in s['jobs']:
+                if pj['job_id'] == job['job_id'] and 'history' in pj:
+                    hist = pj['history']
+    etas = [a['eta_seconds'] for a in job['active'] if a['eta_seconds'] is not None]
+    fastest = None
+    if etas:
+        fastest = min(etas)
+    done = job['floats_completed'] + sum(a['overall'] for a in job['active'])
+    fraction = 0.0
+    if job['floats_total']:
+        fraction = done / job['floats_total']
+    hist = hist + [[time.time(), fastest, fraction]]
+    return hist[-HISTORY_POINTS:]
+
+
 def cmd_statuscache(args, servers):
     """Write ~/.hypernym/status/<owner__repo>.json for the status line (refreshed in the background)."""
     info = repo_info(args.dir)
     out = {'repo': info['key'], 'refreshed_at': time.time(), 'servers': []}
+    previous = None
+    prev_file = HOME / 'status' / f"{info['key_lower'].replace('/', '__')}.json"
+    if prev_file.exists():
+        previous = json.loads(prev_file.read_text())
     policy = cached_policy()
     if portal_of(servers) is not None:
         if policy is None or time.time() - policy['fetched_at'] > POLICY_FRESH_SECONDS:
@@ -990,6 +1039,12 @@ def cmd_statuscache(args, servers):
                     if 'float_progress' in detail and detail['float_progress']:
                         job['floats_total'] = detail['float_progress']['total']
                         job['floats_completed'] = detail['float_progress']['completed']
+                        job['active'] = active_float_progress(server, detail)
+                        job['history'] = job_history(previous, server['name'], job)
+                if j['status'] in ('FAILED', 'CANCELLED') or j['status'].startswith('DRY_RUN_GATE'):
+                    detail = call(server, f"/api/repo/analyze/{j['job_id']}")
+                    if 'error' in detail and detail['error']:
+                        job['error'] = str(detail['error'])[:120]
                 if j['status'] == 'COMPLETED' and existing_package(info, j['job_id']) is None:
                     fetch(server, info, j['job_id'])
                 entry['jobs'].append(job)
