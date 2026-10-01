@@ -1116,12 +1116,12 @@ def cmd_statuscache(args, servers):
         servers = []
         out['sending_off'] = True
     for server in servers:
-        entry = {'name': server['name'], 'error': None, 'floats': 0, 'floats_done': 0, 'jobs': []}
+        entry = {'name': server['name'], 'error': None, 'jobs': []}
         try:
             call(server, "/api/me/quota")
-            fl = repo_floats(server, info['key_lower'])
-            entry['floats'] = len(fl)
-            entry['floats_done'] = sum(1 for s, _, _ in fl.values() if s == 'COMPLETED')
+            # No float listing here: the status line never shows float counts, and paging every one of the
+            # user's floats each refresh from every open window was most of Zephyr's /api/floats load
+            # (177 calls in 5 min, 2026-10-01). `hypernym.py floats` still lists them on request.
             for j in repo_jobs(server, info['key_lower']):
                 job = {'job_id': j['job_id'], 'status': j['status'], 'stage': j['current_stage'],
                        'stage_number': j['current_stage_number'], 'floats_total': None, 'floats_completed': None}

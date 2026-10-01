@@ -22,7 +22,11 @@ the server name only when more than one server is configured):
     ⢤⣶⡾ ⚠ alpha: analysis on disk, not loaded into sessions   autoload off or not current (amber)
     ⢤⣶⡾ not analyzed yet — say "hypernym go"   signed in, nothing for this repo
     not a git repo / no github remote          as before
-A server error that is none of these (unreachable, HTTP 5xx) is shown as it is — never hidden.
+Transient server states show in sky blue with a ticking clock — never hidden, never alarming:
+    ⢤⣶⡾ Zephyr is restarting — patience, it's on its way back ⠐   HTTP 502/503/504
+    ⢤⣶⡾ Zephyr unreachable — patience, retrying ⠐                no connection
+    ⢤⣶⡾ Zephyr hiccup (HTTP 500) — patience, retrying ⠐          any other 5xx
+Anything else the user must act on stays red, shown as it is.
 
 The Zephyr icon flashes (brand.icon_flash, shared with nebula) for 2.4–2.9 s whenever the Zephyr-side data behind
 the line changes — jobs, stages, floats, packages, errors — per Claude Code window (key zephyr:<session_id>).
@@ -98,6 +102,24 @@ def in_use(session_id: str, key: str) -> bool:
     return r['repo'] == key and Path(r['package']).exists()
 
 
+# Transient server states are not the user's problem to fix: a restart (502/503/504), a server hiccup (any other
+# 5xx) or a dropped connection clear on their own. They show in sky blue with a ticking clock, not red (the Pilot,
+# 2026-10-01: "502 looks terrible in red — sky blue for warnings, patience"). Red stays for what the user must act on.
+SKY = '\x1b[38;2;135;206;250m'
+
+
+def patience_line(error: str, now: float):
+    """Sky-blue wording for a transient server state, or None when the error needs the user (then it stays red)."""
+    tick = CLOCK[int(now) % len(CLOCK)]
+    if error in ('HTTP 502', 'HTTP 503', 'HTTP 504'):
+        return f"Zephyr is restarting — patience, it's on its way back {tick}"
+    if error == 'unreachable':
+        return f"Zephyr unreachable — patience, retrying {tick}"
+    if error.startswith('HTTP 5'):
+        return f"Zephyr hiccup ({error}) — patience, retrying {tick}"
+    return None
+
+
 def server_state(s: dict):
     """(colour, text) for one server, or None when it has nothing of its own to say (then the repo's state shows)."""
     if s['error'] == 'HTTP 401':
@@ -105,6 +127,9 @@ def server_state(s: dict):
     if s['error'] == 'HTTP 402':
         return RED, 'add credit — portal.hypernym.ai/plan'
     if s['error']:
+        patience = patience_line(s['error'], time.time())
+        if patience is not None:
+            return SKY, patience
         return RED, s['error']
     running = [j for j in s['jobs'] if j['status'] == 'PROCESSING']
     if running:
