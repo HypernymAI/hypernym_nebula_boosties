@@ -83,12 +83,16 @@ class Codex:
         return 'pilot' if text and not text.startswith('<') else ''   # older rollouts: context comes as <tags>
 
     def _walk(self, path: Path):
-        """→ (session id, [message dicts in order]) — the Claude reader's intermediate form."""
+        """→ (session id, [message dicts in order]) — the Claude reader's intermediate form. A subagent rollout
+        (session_meta source is an object: the approval reviewer 'guardian', a spawned thread) has no pilot: Codex wrote
+        its user turns, so it yields no messages."""
         sid, model, msgs = Path(path).stem, 'unknown', []
         for d in self._records(Path(path)):
             t, p = d['type'], d['payload']
             ts = d['timestamp'] if 'timestamp' in d else ''
             pt = p['type'] if 'type' in p else ''
+            if t == 'session_meta' and 'source' in p and not isinstance(p['source'], str):
+                return (p['id'] if 'id' in p else sid), []
             if t == 'session_meta' and 'id' in p:
                 sid = p['id']
             elif t == 'turn_context' and 'model' in p:
