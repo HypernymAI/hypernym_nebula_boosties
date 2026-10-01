@@ -105,7 +105,7 @@ def in_use(session_id: str, key: str) -> bool:
 # Transient server states are not the user's problem to fix: a restart (502/503/504), a server hiccup (any other
 # 5xx) or a dropped connection clear on their own. They show in sky blue with a ticking clock, not red (the Pilot,
 # 2026-10-01: "502 looks terrible in red — sky blue for warnings, patience"). Red stays for what the user must act on.
-SKY = '\x1b[38;2;135;206;250m'
+SKY = '\x1b[38;2;64;180;255m'  # saturated sky blue: LightSkyBlue (135,206,250) read as white on dark terminals
 
 
 def patience_line(error: str, now: float):
