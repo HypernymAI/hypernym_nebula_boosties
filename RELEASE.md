@@ -87,3 +87,10 @@ Known, accepted
   (ctxshield-plugin/tools/build_native_all.sh, RELEASING.md); Windows = WSL. Background auto-detect = Apple Terminal;
   elsewhere the logo is drawn opaque.
 - The internal scoring library inside nebula is still the python package `ctxshield` (not user-visible).
+- hypernym 0.7.22 (420bc73 "[ wordset ]", the tide status line) needs a Zephyr SERVER change to move: GET
+  /api/repo/analyze/{job_id} must report LIVE per-float status during FLOAT_FILES / AWAIT_FLOATS (`float_progress
+  .completed/.processing`, `files[].status`; same keys, live values — core/repo_analyze_manager.py `get_job_status`).
+  Deployed on Zephyr B 2026-10-03 ~02:04 UTC; NOT on other Zephyrs and NOT yet committed in portable_hypernym_processor.
+  Against an old server the line reads "analyzing 0/N files 0%" with no fill and no water columns while files finish —
+  nothing breaks, nothing red; older plugin versions unaffected. FILE_RANKING has no server progress yet → the plain
+  word "ranking files". localization_8_languages held back (English for now).
