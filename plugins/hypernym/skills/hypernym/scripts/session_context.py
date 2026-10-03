@@ -16,7 +16,8 @@ What it prints is the agent's context (plain stdout, the one form both Claude Co
   - AUTOLOAD (default; HYPERNYM_AUTOLOAD=0 turns it off): the newest package is imported in full by <repo>/CLAUDE.local.md
     (hypernym.install_autoload), so every session starts with all of it and compaction re-injects all of it. Then the
     startup line says it is already in context, and after a compaction the user sees one line:
-    "Hypernym analysis reloaded after compaction — job …, N tokens, commit …"
+    "Hypernym analysis reloaded after compaction — job …, N tokens, 38/40 files, commit …" (covered/selected: a
+    selected file whose float ended FAILED or CANCELLED is not in the package, and both messages name it)
 
 Local only: reads ~/.hypernym and runs git. Never calls the network, never submits anything. Prints nothing outside a
 GitHub repo, and nothing when HYPERNYM_SESSION_CONTEXT=0. NO .get().
@@ -50,6 +51,12 @@ def first_time_here(info: dict) -> bool:
     INVITED.mkdir(parents=True, exist_ok=True)
     marker.write_text(str(time.time()))
     return True
+
+
+def not_analyzed(pkg: Path) -> list:
+    """The selected files a package does NOT cover: their float ended FAILED or CANCELLED, so the treatment prompt has
+    nothing on them and the session must read them from the working tree (job.json keeps every file's final status)."""
+    return [f for f in json.loads((pkg / 'job.json').read_text())['files'] if f['status'] != 'COMPLETED']
 
 
 def package_lines(info: dict, cwd: str, source: str) -> list:
@@ -95,12 +102,23 @@ def package_lines(info: dict, cwd: str, source: str) -> list:
                 f"touches this repo's code (loading sends nothing anywhere; never ask the user to run load, sync or "
                 f"wait), and tell them in one line: \"The Hypernym analysis for this repo is ready — I'm using it now.\" "
                 f"{load_command(cwd)}")
+    missing = not_analyzed(pkg)
+    selected = m['metadata']['files_selected']
+    covering = f"{selected} files"
+    if missing:
+        covering = f"{selected - len(missing)} of the {selected} selected files"
     lines = [
         head,
         f"Newest: job {m['job_id']} from {m['server']}, commit {m['commit'][:12]} ({behind} behind HEAD), "
-        f"completed {m['completed_at_utc']}, {m['metadata']['prompt_tokens']} tokens covering "
-        f"{m['metadata']['files_selected']} files.",
+        f"completed {m['completed_at_utc']}, {m['metadata']['prompt_tokens']} tokens covering {covering}.",
     ]
+    if missing:
+        lines.append(f"Not in the analysis ({len(missing)} selected files never finished analyzing) — read these "
+                     "directly when the work touches them:")
+        for f in missing[:MAX_LISTED]:
+            lines.append(f"  - {f['file_path']} ({f['status'].lower()})")
+        if len(missing) > MAX_LISTED:
+            lines.append(f"  - … and {len(missing) - MAX_LISTED} more (`hypernym packages` lists them all)")
     if m['question']:
         lines.append(f"It answers: {m['question'][:300]}")
     if differ:
@@ -149,13 +167,20 @@ def main() -> None:
         if pkgs and hypernym.autoload_enabled() and hypernym.autoload_current(info, pkgs[0]):
             # The import already put the whole package back after the summary; say so to the user, without noise.
             m = json.loads((pkgs[0] / 'manifest.json').read_text())
+            missing = not_analyzed(pkgs[0])
+            selected = m['metadata']['files_selected']
+            context = ("Hypernym: compaction kept this repo's full analysis — it is re-imported through "
+                       "CLAUDE.local.md. Use it; do not run load.")
+            if missing:
+                context += (f" It covers {selected - len(missing)} of {selected} selected files; read these directly "
+                            f"when the work touches them: {', '.join(f['file_path'] for f in missing[:MAX_LISTED])}.")
             print(json.dumps({
                 'systemMessage': (f"Hypernym analysis reloaded after compaction — job {m['job_id'][:13]}…, "
-                                  f"{m['metadata']['prompt_tokens']:,} tokens, commit {m['commit'][:7]}"),
+                                  f"{m['metadata']['prompt_tokens']:,} tokens, {selected - len(missing)} files, "
+                                  f"commit {m['commit'][:7]}"),
                 'hookSpecificOutput': {
                     'hookEventName': 'SessionStart',
-                    'additionalContext': ("Hypernym: compaction kept this repo's full analysis — it is re-imported "
-                                          "through CLAUDE.local.md. Use it; do not run load."),
+                    'additionalContext': context,
                 },
             }))
             return
