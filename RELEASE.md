@@ -1,5 +1,13 @@
 # Hypernym Nebula — release ownership and checklist
 
+**Repos (2026-10-05, the pilot):**
+- `HypernymAI/hypernym_nebula_boosties` — PRIVATE workshop (this repo, renamed from hypernym_nebula). `main` = the shield
+  only. Branch **`chris/zephyrintegration`** = shield + Zephyr (`plugins/hypernym`, the Codex manifest) for select clients:
+  `claude plugin marketplace add 'HypernymAI/hypernym_nebula_boosties#chris/zephyrintegration'`. Never public.
+- `HypernymAI/hypernym_nebula` — PUBLIC, the shield only, fresh history (no commit from this repo; releases are copied).
+- All keep the marketplace name `hypernym-nebula` (the shared status line finds plugins by it: nebula_statusline.py:43).
+  `sync_to_marketplace.py --marketplace` targets the branch worktree (it needs the hypernym twin).
+
 One marketplace (`hypernym-nebula`), ONE package, two plugins that know about each other:
 **nebula** (local, offline shield) and **hypernym** (Zephyr connector). Either installs alone; together they share
 one status line. Nothing here is published until every box below is checked and the owner has signed off on the gates.

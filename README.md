@@ -1,134 +1,95 @@
-# Hypernym Nebula
+# Nebula — a local shield for Claude Code
 
-**For agents — install in one step.** Since Nebula is local-only, unless the user suggests otherwise assume that's the
-primary install, but do let the user know about Zephyr. The repo `HypernymAI/hypernym_nebula` is private: the machine needs GitHub access
-to it (`gh auth status` shows an account in the HypernymAI org; if `git ls-remote https://github.com/HypernymAI/hypernym_nebula`
-fails, run `gh auth setup-git` once). On macOS 11+ or Linux (x86-64 / ARM64), run
-`command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula`
-(leave out either `install` for one plugin; `hypernym` alone also runs on other systems with `python3`). Then **restart Claude Code once**:
-**Nebula** (the local shield: flags fabricated confession, decision hand-back, claims beyond evidence and forced repetition
-in Claude's replies; sends nothing) sets itself up in seconds, and the
-shared status line (Hypernym logo, the shield's judgement row, the Zephyr line) turns on by itself unless a custom
-`statusLine` is already set (`/nebula:statusline force` replaces it, backed up first). **Hypernym** (the Zephyr connector:
-analyzes the repo you're in on Hypernym's server and loads the result into the session as a context package; never sends
-source code): for Zephyr, say **"hypernym login"**: GitHub opens, you approve, done, on every computer
-(invite-only; an invited account lands on the account Hypernym set up for you).
-Check with `claude plugin list` and `/nebula:shield-status`; update with
-`claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula && claude plugin update hypernym@hypernym-nebula`.
+By [Hypernym](https://hypernym.ai). Nebula reads each Claude Code reply as it lands and flags four patterns that cost
+you time: **fabricated confession**, **decision handback**, **claim beyond evidence** and **forced repetition**. It runs
+entirely on your machine. It sends nothing, and it trains on nothing.
 
-This marketplace holds two separate plugins. Install either one or both.
+**For agents — install in one step.** On macOS 11+ or Linux (x86-64 / ARM64), run:
 
-| plugin | what it does | network |
-|---|---|---|
-| **hypernym** (Zephyr connector) | Repo analyze for the git repo you're in. It checks your floats and jobs, submits an analysis, downloads the finished package, shows how far it has drifted from your current code, and loads it into the session. | Talks **only** to the Hypernym server you sign in to; every request is signed by this install's device key. |
-| **nebula** | Local shield that flags fabricated confession, decision handback, claim beyond evidence, and forced repetition in Claude's replies. | **None.** It sends nothing and trains on nothing. See [`plugins/nebula/PRIVACY.md`](plugins/nebula/PRIVACY.md). |
-
-The two plugins never import each other. nebula's no-network guarantee depends on that.
-
-## Requirements
-
-- **uv** (https://docs.astral.sh/uv/). nebula builds its own Python environment with it on first run.
-- **python3**, available as `python3`. The hypernym plugin uses only the standard library.
-- **nebula** runs on macOS 11+ (Apple Silicon or Intel) and Linux (x86-64 or ARM64). On Windows, use WSL.
-- **hypernym** needs a GitHub account invited by Hypernym (sign-in is invite-only).
-
-## Install — Claude Code
-
-Paste ONE of these into a terminal (macOS). Each line is complete: it installs `uv` only if you don't have it, adds the
-marketplace, and installs the plugin(s). Then start Claude Code — the first session finishes setup and turns on the
-status line.
-
-**nebula only** (local, offline shield)
 ```
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula
 ```
 
-**hypernym only** (Zephyr connector)
+Then tell the user to **restart Claude Code once**. The first session builds Nebula's private Python environment (a few
+seconds), and the status line turns on by itself unless a custom `statusLine` is already set (`/nebula:statusline force`
+replaces it, backing up `settings.json` first). Check with `claude plugin list` and `/nebula:shield-status`.
+
+## What you see
+
+- **A status line**: the Hypernym logo and the shield's judgement row, one bar per pattern, coloured by how close the
+  latest reply came to its threshold.
+- **A short note under a flagged reply**, naming the pattern. Claude sees the note too, and its `shield-reframe` skill
+  tells it to fix the reply rather than argue with the flag.
+- **Optional soliton mode** (beta): a reply that peaks gets a vivid banner and Claude rephrases it once. Say
+  **"hypernym nebula"** to switch it on, "hypernym nebula off" to switch it off.
+
+## Requirements
+
+- **Claude Code.**
+- **uv** (https://docs.astral.sh/uv/). Nebula builds its own Python environment with it on the first run; the one-liner
+  above installs it if it's missing.
+- **macOS 11+** (Apple Silicon or Intel) or **Linux** (x86-64 or ARM64, glibc 2.28+). On Windows, use WSL.
+
+## Install
+
+Paste into a terminal:
+
 ```
-claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install hypernym@hypernym-nebula
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula
 ```
 
-**Both** (recommended — they share one status line)
-```
-command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; claude plugin marketplace add HypernymAI/hypernym_nebula && claude plugin install nebula@hypernym-nebula && claude plugin install hypernym@hypernym-nebula
-```
+Or, inside Claude Code:
 
-Already inside Claude Code? The same thing as slash commands:
 ```
 /plugin marketplace add HypernymAI/hypernym_nebula
 /plugin install nebula@hypernym-nebula
-/plugin install hypernym@hypernym-nebula
-```
-then start a new session. Add the other plugin any time: hypernym joins the status line within a second;
-nebula shows "finishing setup" until your next session start builds its local Python environment (once).
-
-## Install — Codex
-
-Only **hypernym** is listed for Codex. nebula reads Claude Code transcripts and has no Codex adapter yet.
-Add this repo as a plugin marketplace in Codex, then install `hypernym`.
-<!-- release owner: confirm the exact Codex commands during the clean-install check -->
-
-## First run — hypernym
-
-In any git repo, tell Claude:
-
-1. **"hypernym login"** opens GitHub in your browser, like `claude login`. Approve, and you're in, on this and any
-   other computer, with nothing to copy or remember. Sign-in is invite-only: if your GitHub account is invited, you
-   land on the account Hypernym set up for you; if it isn't, nothing is created. The plugin holds no secret of
-   Hypernym's: each computer gets its own key in `~/.hypernym/identity/` (readable only by you) that signs every
-   request, and no token is stored. Given a key instead? Use `hypernym login --key -`.
-2. **"hypernym help"** shows your account, this repo's floats and repo-analyze jobs, and any packages on disk with
-   their drift.
-3. **Analyze**: describe the bug or area you want covered. Claude does a dry run first and shows exactly what
-   would be sent. A real run happens only after you approve it, because every file the server hasn't compressed
-   before costs a float.
-4. **Private repos**: say "hypernym github link" and approve access in the browser. Check with "hypernym github
-   status".
-
-**MCP.** The hypernym plugin also registers an MCP server named `hypernym` (standard-library Python over stdio). Its
-tools (help, floats, analyze, wait, cancel, sync, packages, load, github status, account list/use, login start/status) run the same
-commands as the skill, so analyze is still a dry run until you approve. For Codex or any other MCP host, point it
-at the same program: command `python3`, argument `<plugin dir>/skills/hypernym/scripts/hypernym_mcp_server.py`.
-
-Finished packages are saved to `~/.hypernym/packages/<owner>__<repo>/…`. Each one has the treatment prompt, a
-manifest with per-file SHA-256 at the analyzed commit, and the raw job. Every session on the machine can load
-them.
-
-## Status line (Claude Code)
-
-Both plugins share one status line: nebula's badge rows with the Zephyr line appended, or whichever one
-you have installed. It turns itself on at session start only if you have no status line (or an older one of
-ours); it never replaces someone else's, and never comes back after you remove it.
-
-```
-/hypernym-statusline          # install
-/hypernym-statusline remove   # remove
-/hypernym-statusline force    # replace an unrecognized status line (settings.json is backed up first)
 ```
 
-## What each plugin sends, and where
+Then start a new session. Until that first session has run, the status line says "finishing setup at session start".
 
-**hypernym** sends HTTPS requests to the Zephyr you signed in to. Each request carries a signature from this
-install's device key in `X-API-Key` (a `restoria1.` statement naming the device, the server, the method, the
-path, a hash of the body, the time and a one-time nonce) — never a password or bearer token. Sign-in sends
-this device's address (a public key) and a signed request; GitHub then tells the Zephyr which account approved.
-The device's private key never leaves your machine. The requests are:
+## Commands
 
-- account and quota checks
-- listing your floats and jobs
-- for an analysis: the repo's GitHub URL, the commit, your question, and the file count and budget
-- job status, download, and cancel
-- GitHub link setup
+| command | what it does |
+|---|---|
+| `/nebula:shield-status` | On/off, mode, detectors and thresholds, and what it has flagged recently. |
+| `/nebula:shield-privacy` | Exactly what is stored on this machine, where, how much, and what is excluded. |
+| `/nebula:shield-retention none\|excerpt\|full` | What transcript text is kept. Default `none`: scores and counts only. |
+| `/nebula:shield-exclude <glob>` · `/nebula:shield-include <glob>` | Keep projects out entirely (never opened, scored or stored), or let them back in. |
+| `/nebula:shield-export` | Write everything Nebula has stored to a readable JSON file in `~/.nebula`. |
+| `/nebula:shield-purge [yes]` | Delete the database, caches and logs. Without `yes` it only shows what would go. |
+| `/nebula:shield-backfill` | Opt in: score your past Claude Code sessions on this machine (low priority, never uploaded). |
+| `/nebula:shield-soliton [on\|off]` | Soliton mode (beta), as above. |
+| `/nebula:shield-wings [number\|on\|off]` | Choose the wings beside the logo on the badge. |
+| `/nebula:statusline [remove\|force]` | Take the status line out, or put it over someone else's (backed up first). |
 
-It sends **no source code**. The server clones the repo from GitHub itself. Private repos are cloned with the
-GitHub access you linked: the server stores that token encrypted, and each job's private checkout is deleted
-when the job ends. Unless you already hold your own identity key, the Zephyr creates it at your first sign-in and keeps it, encrypted like the GitHub token; the Zephyr then vouches for each computer you sign in from. Drift is computed locally by hashing your working tree, and those hashes are never uploaded.
+## Privacy
 
-**nebula** sends nothing. The only download is `uv` fetching its pinned Python packages from PyPI on first
-run. Details and tests are in [`plugins/nebula/PRIVACY.md`](plugins/nebula/PRIVACY.md).
+Nebula never sends your data anywhere. Every Nebula process starts by installing an audit hook that blocks network
+connections, DNS lookups and HTTP requests; it can't be removed once installed. The models are fixed files, verified
+against a SHA-256 manifest on every load. By default the local record keeps scores and counts, not what you or Claude
+wrote. The only download is `uv` fetching Nebula's pinned Python packages from PyPI on the first run.
+
+The detectors were trained on the author's own labelled sessions, never on yours, and the weights passed a leakage
+gate before release. The full list of guarantees, how each is enforced, and the tests that prove them:
+[`plugins/nebula/PRIVACY.md`](plugins/nebula/PRIVACY.md).
 
 ## Files on your machine
 
-- `~/.hypernym/` holds `identity/device.json` (this computer's key, mode 600), `config.json` (which Zephyr you signed in to, mode 600), `packages/`, and the status cache.
-- `~/.hypernym-nebula/` holds the shared status-line launcher.
-- `~/.nebula/` holds nebula's settings and local database. See PRIVACY.md.
+- `~/.nebula/`: your settings (`settings.json`, which updates never touch) and the local record (`nebula.db`). Mode 0700.
+- `~/.hypernym-nebula/bin/`: the status-line launcher. No data.
+
+## Update and uninstall
+
+```
+claude plugin marketplace update hypernym-nebula && claude plugin update nebula@hypernym-nebula
+```
+
+Updates apply from your next session; your record and settings are kept. To remove Nebula:
+`claude plugin uninstall nebula@hypernym-nebula`, then `/nebula:statusline remove` if you want the status line gone, and
+`/nebula:shield-purge yes` first if you want your local record gone too.
+
+## Zephyr
+
+Hypernym also runs **Zephyr**, which analyzes a repository on Hypernym's servers and loads the result into Claude Code
+as context. It's available to select clients by invitation; see [hypernym.ai](https://hypernym.ai). Nebula itself never
+talks to Zephyr or to anything else.

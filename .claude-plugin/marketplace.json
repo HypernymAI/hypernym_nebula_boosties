@@ -1,6 +1,6 @@
 {
   "name": "hypernym-nebula",
-  "description": "Hypernym Nebula for Claude Code: nebula (local, offline shield) and hypernym (Zephyr connector). Install either or both; together they share one status line.",
+  "description": "Hypernym Nebula for Claude Code: nebula, a local, offline shield for Claude's replies.",
   "owner": {
     "name": "Hypernym"
   },
@@ -9,11 +9,6 @@
       "name": "nebula",
       "source": "./plugins/nebula",
       "description": "Local, offline shield: flags fabricated confession, decision handback, claim beyond evidence and forced repetition in Claude's replies. No network, no telemetry, no training on your data."
-    },
-    {
-      "name": "hypernym",
-      "source": "./plugins/hypernym",
-      "description": "Zephyr connector: repo analyze for the current repo — floats, jobs, packages with drift."
     }
   ]
 }
