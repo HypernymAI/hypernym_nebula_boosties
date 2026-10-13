@@ -1,0 +1,7 @@
+{
+  "name": "hypernym-nebula-pro",
+  "interface": { "displayName": "Hypernym Nebula" },
+  "plugins": [
+    { "name": "hypernym", "source": "./plugins/hypernym", "category": "developer-tools" }
+  ]
+}
