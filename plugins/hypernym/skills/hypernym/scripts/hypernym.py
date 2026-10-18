@@ -1108,7 +1108,10 @@ def cmd_statuscache(args, servers):
     previous = None
     prev_file = HOME / 'status' / f"{info['key_lower'].replace('/', '__')}.json"
     if prev_file.exists():
-        previous = json.loads(prev_file.read_text())
+        try:
+            previous = json.loads(prev_file.read_text())
+        except json.JSONDecodeError:
+            previous = None  # a damaged cache is rewritten below, never left to block every refresh
     policy = cached_policy()
     if portal_of(servers) is not None:
         if policy is None or time.time() - policy['fetched_at'] > POLICY_FRESH_SECONDS:
@@ -1162,7 +1165,7 @@ def cmd_statuscache(args, servers):
                                  'autoload': autoload_enabled() and autoload_current(info, pkgs[0])}
     target = HOME / 'status' / f"{info['key_lower'].replace('/', '__')}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix('.tmp')
+    tmp = target.with_suffix(f'.{os.getpid()}.tmp')  # per process: two refreshers sharing one .tmp left a stray '}'
     tmp.write_text(json.dumps(out))
     tmp.replace(target)
 

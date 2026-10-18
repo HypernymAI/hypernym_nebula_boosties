@@ -286,7 +286,12 @@ def main() -> None:
         # First tick in a repo: say something useful right away, not an ellipsis, while the refresh runs.
         print(f"{CLOUD} {SKY}checking Zephyr {CLOCK[int(time.time()) % len(CLOCK)]}{RESET}")
         return
-    c = json.loads(cache.read_text())
+    try:
+        c = json.loads(cache.read_text())
+    except json.JSONDecodeError:
+        # Damaged cache: the next refresh rewrites it; until then say so plainly, never a traceback.
+        print(f"{CLOUD} {SKY}checking Zephyr {CLOCK[int(time.time()) % len(CLOCK)]}{RESET}")
+        return
     icon = icon_flash(ZEPHYR_ICON, f"zephyr:{event['session_id']}", zephyr_signature(c), time.time())
     print(render(c, event['session_id'], key, stale, icon))
 
