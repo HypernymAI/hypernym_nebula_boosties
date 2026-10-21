@@ -1,5 +1,0 @@
-{
-  "mcpServers": {
-    "nebula": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/nebula-run", "args": ["mcp_server.py"] }
-  }
-}

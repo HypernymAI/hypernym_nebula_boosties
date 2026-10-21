@@ -29,6 +29,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CLI = HERE / 'hypernym.py'
 STATUSLINE = HERE / 'statusline.py'
+SHARED_BAR = HERE / 'nebula_statusline.py'
+BAR_ACTIONS = {'install': ['install'], 'force': ['install', '--force'], 'remove': ['remove']}
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 LOGIN_LOG = Path.home() / '.hypernym' / 'login.log'
 # Every approval dialog's raw answer (local only), so what the client actually returned can always be checked.
@@ -52,6 +54,11 @@ TOOLS = [
                     "analysis running with its progress, analysis complete with its file count, top up, Zephyr "
                     "reconnecting). Use for \"hypernym status\". Show it as-is.",
      'inputSchema': {'type': 'object', 'properties': {'dir': DIR_PROP}}},
+    {'name': 'hypernym_statusline',
+     'description': "The shared hypernym-nebula status line in Claude Code: install it, force it over someone else's "
+                    "(backed up first), or remove it. Show the output as-is.",
+     'inputSchema': {'type': 'object', 'required': ['action'],
+                     'properties': {'action': {'type': 'string', 'enum': list(BAR_ACTIONS)}}}},
     {'name': 'hypernym_help',
      'description': "Setup check and overview for this repo: sign-in on each server, this repo's floats and "
                     "repo-analyze jobs (downloads finished packages), and local packages with their drift.",
@@ -164,6 +171,12 @@ def status_row(arguments: dict) -> tuple:
 def call_tool(name: str, arguments: dict) -> tuple:
     if name == 'hypernym_status':
         return status_row(arguments)
+    if name == 'hypernym_statusline':
+        if arguments['action'] not in BAR_ACTIONS:
+            return f"action must be one of {list(BAR_ACTIONS)}", True
+        r = subprocess.run([sys.executable, str(SHARED_BAR), *BAR_ACTIONS[arguments['action']]], capture_output=True,
+                           text=True, timeout=60, stdin=subprocess.DEVNULL)
+        return (r.stdout + r.stderr).strip(), r.returncode != 0
     if name == 'hypernym_about':
         return run_cli(['about'])
     if name == 'hypernym_help':
