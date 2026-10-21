@@ -460,6 +460,9 @@ INSTALL_LINES = (
     "(nothing is uninstalled; your Nebula settings stay)",
     "Update: claude plugin marketplace update && claude plugin update nebula@hypernym-nebula && "
     "claude plugin update hypernym@hypernym-nebula-pro",
+    f"Codex: codex plugin marketplace add HypernymAI/hypernym_nebula && codex plugin marketplace add {PRO} && "
+    "codex plugin add nebula@hypernym-nebula && codex plugin add hypernym@hypernym-nebula-pro, then trust their hooks "
+    "once with /hooks",
 )
 
 

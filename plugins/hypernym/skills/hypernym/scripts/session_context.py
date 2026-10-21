@@ -59,6 +59,18 @@ def not_analyzed(pkg: Path) -> list:
     return [f for f in json.loads((pkg / 'job.json').read_text())['files'] if f['status'] != 'COMPLETED']
 
 
+def in_codex() -> bool:
+    """Codex sets PLUGIN_ROOT for plugin hooks; Claude Code does not. Codex never reads CLAUDE.local.md, so the package
+    reaches a Codex session only by the agent reading it."""
+    return 'PLUGIN_ROOT' in os.environ
+
+
+def codex_read_line(info: dict, m: dict) -> str:
+    return (f"Hypernym: read {info['root'] / hypernym.LOCAL_COPY} in full, nonoptional — to its last line, in parts if "
+            f"your tools return it in chunks ({m['metadata']['prompt_tokens']:,} tokens). It is this repo's analysis "
+            "package; do it before replying, and never ask the user to.")
+
+
 def package_lines(info: dict, cwd: str, source: str) -> list:
     pkgs = hypernym.list_packages(info)
     if not pkgs:
@@ -85,7 +97,11 @@ def package_lines(info: dict, cwd: str, source: str) -> list:
         behind = f"{d['commits_behind']} commit"
         if d['commits_behind'] != 1:
             behind += 's'
-    if hypernym.autoload_enabled():
+    if in_codex():
+        if not hypernym.autoload_current(info, pkg):
+            hypernym.install_autoload(info, pkg)
+        head = codex_read_line(info, m)
+    elif hypernym.autoload_enabled():
         if hypernym.autoload_current(info, pkg):
             head = (f"Hypernym: this repo's full analysis is already in your context — imported in full through "
                     f"CLAUDE.local.md (@{hypernym.LOCAL_COPY.as_posix()}). Use it; do not run load, and never ask the "
@@ -164,6 +180,12 @@ def main() -> None:
         return  # not a git repo, or not a GitHub one: Hypernym has nothing to say here
     if payload['source'] == 'compact':
         pkgs = hypernym.list_packages(info)
+        if in_codex():
+            if pkgs:
+                if hypernym.autoload_current(info, pkgs[0]):
+                    m = json.loads((pkgs[0] / 'manifest.json').read_text())
+                    print(codex_read_line(info, m))
+                    return
         if pkgs and hypernym.autoload_enabled() and hypernym.autoload_current(info, pkgs[0]):
             # The import already put the whole package back after the summary; say so to the user, without noise.
             m = json.loads((pkgs[0] / 'manifest.json').read_text())

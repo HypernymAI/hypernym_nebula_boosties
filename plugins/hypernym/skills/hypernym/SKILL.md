@@ -1,9 +1,19 @@
 ---
 name: hypernym
-description: Hypernym repo analysis for the git repo you are working in — check floats and repo-analyze jobs, submit a repo analyze, download the finished package, report how far it has drifted from the current code, and load it into the session. Use when the user says "hypernym go", "hypernym analyze", "hypernym do it" or "yes" to a Hypernym offer (start an analysis of this repo now), "hypernym help" or "hypernym login" (sign in to Hypernym/Zephyr — use this skill's login, never a hand-written curl), asks about floats, float status, repo analyze, a Hypernym package or treatment prompt, or wants Hypernym context for this repo loaded.
+description: Hypernym repo analysis for the git repo you are working in — check floats and repo-analyze jobs, submit a repo analyze, download the finished package, report how far it has drifted from the current code, and load it into the session. Use when the user says "hypernym status", "hypernym go", "hypernym analyze", "hypernym do it" or "yes" to a Hypernym offer (start an analysis of this repo now), "hypernym help" or "hypernym login" (sign in to Hypernym/Zephyr — use this skill's login, never a hand-written curl), asks about floats, float status, repo analyze, a Hypernym package or treatment prompt, or wants Hypernym context for this repo loaded.
 ---
 
 # Hypernym
+
+## In Codex: use the MCP tools
+
+Codex runs your shell commands in a sandbox without network and without write access to `~/.hypernym`, so the script
+below cannot reach the Zephyr from there. In Codex, call the hypernym MCP tools instead — they run the same script
+outside the sandbox and give the same output:
+"hypernym status" → `hypernym_status` · "hypernym help" → `hypernym_help` · "hypernym go" → `hypernym_analyze` with
+`execute: true` (it opens Hypernym's approval dialog) · "hypernym login" → `hypernym_login_start`, then
+`hypernym_login_status` · packages / load / sync / wait / cancel / floats / accounts / GitHub → the tool of that name.
+Show each tool's output as-is. Everything below applies the same way through the tools.
 
 All actions go through one script in this skill's `scripts/` folder. Run it from the repo, with the
 absolute path to this skill's directory:

@@ -1,8 +1,11 @@
 {
   "mcpServers": {
     "hypernym": {
-      "command": "python3",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/hypernym_mcp_server.py"]
+      "command": "sh",
+      "args": [
+        "-c",
+        "r=\"${CLAUDE_PLUGIN_ROOT}\"; s=skills/hypernym/scripts/hypernym_mcp_server.py; if [ ! -f \"$r/$s\" ]; then r=$(ls -td \"$HOME\"/.codex/plugins/cache/*/hypernym/*/ 2>/dev/null | head -1); fi; exec python3 \"${r%/}/$s\""
+      ]
     }
   }
 }

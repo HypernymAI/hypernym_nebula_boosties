@@ -20,6 +20,7 @@ there keeps its old meaning (the person's portal Sending setting is their consen
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -27,6 +28,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CLI = HERE / 'hypernym.py'
+STATUSLINE = HERE / 'statusline.py'
+ANSI = re.compile(r'\x1b\[[0-9;]*m')
 LOGIN_LOG = Path.home() / '.hypernym' / 'login.log'
 # Every approval dialog's raw answer (local only), so what the client actually returned can always be checked.
 APPROVAL_LOG = Path.home() / '.hypernym' / 'approval_answers.jsonl'
@@ -34,7 +37,7 @@ PLUGIN_MANIFEST = HERE.parent.parent.parent / '.claude-plugin' / 'plugin.json'
 SERVER_INFO = {'name': 'hypernym', 'version': json.loads(PLUGIN_MANIFEST.read_text())['version']}
 SUPPORTED_PROTOCOLS = ('2025-06-18', '2025-03-26', '2024-11-05')
 RUN_TIMEOUT_S = 900
-CLIENT = {'elicitation': False}                   # set from the client's capabilities at initialize
+CLIENT = {'elicitation': False, 'codex': False}   # set from the client's capabilities / clientInfo at initialize
 BACKLOG = []                                      # messages that arrived while waiting for a dialog answer
 ELICIT_SEQ = [0]
 
@@ -44,6 +47,11 @@ TOOLS = [
      'description': "What the two plugins are (Nebula, the local shield; Hypernym, the Zephyr connector), plus the "
                     "install and update lines. Use for \"what does this do?\".",
      'inputSchema': {'type': 'object', 'properties': {}}},
+    {'name': 'hypernym_status',
+     'description': "The Zephyr status row for this repo — the same line Claude Code's status bar shows (signed in, "
+                    "analysis running with its progress, analysis complete with its file count, top up, Zephyr "
+                    "reconnecting). Use for \"hypernym status\". Show it as-is.",
+     'inputSchema': {'type': 'object', 'properties': {'dir': DIR_PROP}}},
     {'name': 'hypernym_help',
      'description': "Setup check and overview for this repo: sign-in on each server, this repo's floats and "
                     "repo-analyze jobs (downloads finished packages), and local packages with their drift.",
@@ -144,7 +152,18 @@ def login_status() -> tuple:
     return LOGIN_LOG.read_text().strip(), False
 
 
+def status_row(arguments: dict) -> tuple:
+    """statusline.py's row for this repo (it reads the local status cache and refreshes it in the background), plain."""
+    r = subprocess.run([sys.executable, str(STATUSLINE)], input=json.dumps({'session_id': 'mcp', 'cwd': _dir(arguments)}),
+                       capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        return f"status line failed: {r.stderr.strip()[-300:]}", True
+    return ANSI.sub('', r.stdout).strip(), False
+
+
 def call_tool(name: str, arguments: dict) -> tuple:
+    if name == 'hypernym_status':
+        return status_row(arguments)
     if name == 'hypernym_about':
         return run_cli(['about'])
     if name == 'hypernym_help':
@@ -225,10 +244,24 @@ def dialog_text(dry: str, top_n: int) -> str:
     sent = f"Sent: the repo's GitHub address and commit {facts['commit'][:12]} — never your code."
     if facts['focus'] != 'auto':
         sent = f"Sent: the repo's GitHub address, commit {facts['commit'][:12]} and your question — never your code."
-    lines += [sent, "Claude keeps working and uses it automatically when it's ready."]
+    agent = 'Claude'
+    if CLIENT['codex']:
+        agent = 'Codex'
+    lines += [sent, f"{agent} keeps working and uses it automatically when it's ready."]
     if gap is not None:
         lines.append("Note: " + gap.replace("; these files differ and the package will describe their GitHub version.",
                                             "; the analysis describes the GitHub version."))
+    if CLIENT['codex']:
+        # Codex shows the message as one paragraph (line breaks dropped, measured 2026-10-19) under its own buttons
+        # (Yes / No / Cancel): full sentences, joined by spaces, naming those buttons.
+        lines += [f"Yes analyzes (up to {top_n} credits); No or Cancel sends nothing."]
+        sentences = []
+        for line in lines:
+            if line:
+                if not line.endswith(('.', '!', '?')):
+                    line += '.'
+                sentences.append(line)
+        return ' '.join(sentences)
     lines += ["", f"Accept to analyze (up to {top_n} credits). Decline to send nothing."]
     return "\n".join(lines)
 
@@ -338,6 +371,9 @@ def handle(message: dict) -> None:
         params = message['params']
     if method == 'initialize':
         CLIENT['elicitation'] = 'capabilities' in params and 'elicitation' in params['capabilities']
+        if 'clientInfo' in params:
+            if 'name' in params['clientInfo']:
+                CLIENT['codex'] = params['clientInfo']['name'] == 'codex-mcp-client'
         version = SUPPORTED_PROTOCOLS[0]
         if 'protocolVersion' in params:
             if params['protocolVersion'] in SUPPORTED_PROTOCOLS:
