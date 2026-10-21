@@ -56,7 +56,7 @@ Already inside Claude Code? The same, as slash commands:
 ```
 
 Then start a new session. You can add the other plugin any time: hypernym joins the status line within a second, and
-nebula says "finishing setup at session start" until your next session builds its environment (once).
+nebula asks for one restart, then builds its environment as that session starts.
 
 ## First run: Zephyr
 
@@ -85,7 +85,7 @@ point it at the same program: command `python3`, argument
 
 Nebula reads each reply as it lands and shows its judgement in the status line, with a short note under a flagged reply.
 Claude sees the note too, and fixes the reply rather than arguing with the flag. Say **"hypernym nebula"** for soliton
-mode (beta): a reply that peaks gets a vivid banner and is rephrased once.
+mode: a reply that peaks gets a vivid banner and is rephrased once.
 
 | command | what it does |
 |---|---|

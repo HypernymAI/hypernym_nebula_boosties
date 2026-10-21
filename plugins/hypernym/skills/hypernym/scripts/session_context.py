@@ -5,7 +5,7 @@ it was launched in, so a brand-new session or one that was just compacted knows 
 having to say "hypernym help".
 
 What it prints is the agent's context (plain stdout, the one form both Claude Code and Codex accept for SessionStart):
-  - the newest package for this repo: job, commit, how many commits behind HEAD, the question it answered, its size
+  - the newest package for this repo: job, the commit it was made at, the question it answered, its size
   - drift: which packaged files differ from the working tree (read those directly; the package describes old versions)
   - that loading is the AGENT's job: load it yourself when the work touches this repo's code (the full package is ~80K
     tokens — too much for a hook to inject, and wasted on unrelated work); the user never runs load/sync/wait
@@ -92,11 +92,6 @@ def package_lines(info: dict, cwd: str, source: str) -> list:
     m = json.loads((pkg / 'manifest.json').read_text())
     d = hypernym.drift(info, m)
     differ = d['changed'] + d['missing']
-    behind = 'an unknown number of commits'
-    if d['commits_behind'] is not None:
-        behind = f"{d['commits_behind']} commit"
-        if d['commits_behind'] != 1:
-            behind += 's'
     if in_codex():
         if not hypernym.autoload_current(info, pkg):
             hypernym.install_autoload(info, pkg)
@@ -125,34 +120,32 @@ def package_lines(info: dict, cwd: str, source: str) -> list:
         covering = f"{selected - len(missing)} of the {selected} selected files"
     lines = [
         head,
-        f"Newest: job {m['job_id']} from {m['server']}, commit {m['commit'][:12]} ({behind} behind HEAD), "
-        f"completed {m['completed_at_utc']}, {m['metadata']['prompt_tokens']} tokens covering {covering}.",
+        f"The analysis: job {m['job_id']} from {m['server']}, made at commit {m['commit'][:12]} on "
+        f"{m['completed_at_utc'][:10]}, {m['metadata']['prompt_tokens']:,} tokens covering {covering}.",
     ]
     if missing:
-        lines.append(f"Not in the analysis ({len(missing)} selected files never finished analyzing) — read these "
-                     "directly when the work touches them:")
+        lines.append("These selected files aren't part of the analysis; read them directly when the work touches "
+                     "them:")
         for f in missing[:MAX_LISTED]:
-            lines.append(f"  - {f['file_path']} ({f['status'].lower()})")
+            lines.append(f"  - {f['file_path']}")
         if len(missing) > MAX_LISTED:
             lines.append(f"  - … and {len(missing) - MAX_LISTED} more (`hypernym packages` lists them all)")
     if m['question']:
         lines.append(f"It answers: {m['question'][:300]}")
     if differ:
-        lines.append(f"Drift: {len(differ)} of {d['files']} packaged files differ from the working tree; the package "
-                     "describes their older versions, so read these directly:")
+        lines.append("Edited since the analysis was made; read their current code when the work touches them:")
         for path in differ[:MAX_LISTED]:
             if path in d['missing']:
-                lines.append(f"  - {path} (deleted)")
+                lines.append(f"  - {path} (since removed)")
             else:
                 lines.append(f"  - {path}")
         if len(differ) > MAX_LISTED:
             lines.append(f"  - … and {len(differ) - MAX_LISTED} more (`hypernym packages` lists them all)")
-    else:
-        lines.append(f"Drift: none; all {d['files']} packaged files match the working tree.")
     if d['unknown']:
-        lines.append(f"({d['unknown']} packaged files have no baseline hash, so their drift is unknown.)")
-    if len(pkgs) > 1:
-        lines.append(f"{len(pkgs) - 1} older package(s) for this repo are also on disk (`hypernym packages`).")
+        lines.append(f"For {d['unknown']} analyzed files there is nothing to compare with; read their current code "
+                     "when the work touches them.")
+    lines.append("This note is for you. Use it quietly: don't tell the user about commits, edited files or files "
+                 "outside the analysis unless they ask; just read the current code where it matters.")
     return lines
 
 
