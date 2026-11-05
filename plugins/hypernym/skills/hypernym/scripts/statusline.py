@@ -25,10 +25,16 @@ the server name only when more than one server is configured):
     ⢤⣶⡾ alpha · analysis downloaded — loads in your next session   autoload not current yet (sky blue)
     ⢤⣶⡾ not analyzed yet — say "hypernym go"   signed in, nothing for this repo
     not a git repo / no github remote          as before
-Server states show in sky blue with a slow clock — never hidden, never alarming, never an error code:
-    ⢤⣶⡾ Zephyr is on its way back — patience ⠐     HTTP 502/503/504
-    ⢤⣶⡾ reconnecting to Zephyr — patience ⠐        no connection
-    ⢤⣶⡾ Zephyr is catching its breath — patience ⠐ any other 5xx or unexpected answer
+ZEPHYR AWAY (no connection, or HTTP 502/503/504 — the Pilot, 2026-11-05: the words say what the person HAS; the icon
+says how Zephyr is): for the first GRACE_S nothing changes (a restart or a dropped request never shows). After that the
+Zephyr icon rests in greyscale — once in a while, with the shield's gentle shiny flash, its three glyphs light up 1·2·3
+and settle back to grey — and the words stay the person's own:
+    ⢤⣶⡾ analysis complete — 40 files             unchanged: the analysis is on this machine and still loads
+    ⢤⣶⡾ analysis continues when Zephyr returns — 35/40 files   a run was in progress (it resumes on the server)
+    ⢤⣶⡾ Zephyr is resting — say "hypernym go" later            nothing analyzed here yet
+While away, the background refresh runs every AWAY_REFRESH_S instead of every REFRESH_S.
+Any other server answer (another 5xx, anything unexpected) shows in sky blue with a slow clock:
+    ⢤⣶⡾ Zephyr is catching its breath — patience ⠐
 NOTHING in this row is ever red or amber, and nothing tells the customer that anything is wrong (the Pilot,
 2026-10-02). Every state is sky blue, green or grey; exact server errors live only in `hypernym help`.
 
@@ -37,6 +43,7 @@ the line changes — jobs, stages, floats, packages, errors — per Claude Code 
 NO .get().
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -44,7 +51,7 @@ import sys
 import time
 from pathlib import Path
 
-from brand import ZEPHYR_ICON, icon_flash
+from brand import ZEPHYR_ICON, _blend, _holo, gentle_phase, icon_flash
 
 HERE = Path(__file__).resolve().parent
 STATUS = Path.home() / '.hypernym' / 'status'
@@ -53,6 +60,9 @@ SESSIONS = Path.home() / '.hypernym' / 'sessions'
 CREDIT_REFUSED = Path.home() / '.hypernym' / 'credit_refused.json'
 LOGIN = 'say "hypernym login"'
 REFRESH_S = 20
+AWAY_REFRESH_S = 600            # Zephyr away past the grace period: ask again every 10 minutes, not every 20 s
+GRACE_S = 60                    # away for less than this: nothing on the row changes
+AWAY = ('unreachable', 'HTTP 502', 'HTTP 503', 'HTTP 504')
 LOCK_S = 120
 RESET, DIM = '\x1b[0m', '\x1b[2m'
 GREEN, GREY = '\x1b[38;2;120;200;140m', '\x1b[38;2;110;110;110m'  # no red, no amber — ever (the Pilot, 2026-10-02)
@@ -112,15 +122,31 @@ SKY = '\x1b[38;2;64;180;255m'  # saturated sky blue: LightSkyBlue (135,206,250) 
 
 
 def patience_line(error: str, now: float):
-    """Sky-blue wording for a transient server state, or None for any other answer (that gets the calm catch-all)."""
+    """Sky-blue wording for a server hiccup, or None for any other answer (that gets the calm catch-all)."""
     tick = CLOCK[int(now) % len(CLOCK)]
-    if error in ('HTTP 502', 'HTTP 503', 'HTTP 504'):
-        return f"Zephyr is on its way back — patience {tick}"
-    if error == 'unreachable':
-        return f"reconnecting to Zephyr — patience {tick}"
     if error.startswith('HTTP 5'):
         return f"Zephyr is catching its breath — patience {tick}"
     return None
+
+
+def away(s: dict) -> bool:
+    """No connection to this Zephyr, or it is restarting (502/503/504)."""
+    return s['error'] in AWAY
+
+
+def resting(s: dict, now: float) -> bool:
+    """Away for at least GRACE_S. A cache written before down_since existed counts as resting."""
+    if not away(s):
+        return False
+    if 'down_since' not in s or s['down_since'] is None:
+        return True
+    return now - s['down_since'] >= GRACE_S
+
+
+def continues_line(j: dict) -> str:
+    if j['floats_total']:
+        return f"analysis continues when Zephyr returns — {j['floats_completed']}/{j['floats_total']} files"
+    return "analysis continues when Zephyr returns"
 
 
 def server_state(s: dict):
@@ -129,6 +155,15 @@ def server_state(s: dict):
         return SKY, LOGIN
     if s['error'] == 'HTTP 402':
         return SKY, 'top up to keep going — portal.hypernym.ai/plan'
+    if away(s):
+        # The jobs are the last ones Zephyr reported. Only a run in progress has something to say; otherwise the
+        # person's analysis (or "resting") shows.
+        running = [j for j in s['jobs'] if j['status'] == 'PROCESSING']
+        if not running:
+            return None
+        if resting(s, time.time()):
+            return SKY, continues_line(running[0])
+        return SKY, analyzing_line(running[0], time.time())
     if s['error']:
         patience = patience_line(s['error'], time.time())
         if patience is not None:
@@ -239,6 +274,37 @@ def package_state(p: dict, used: bool) -> str:
     return f"{GREEN}analysis complete{files}{RESET}"
 
 
+def all_resting(c: dict, now: float) -> bool:
+    """Every configured Zephyr has been away past the grace period."""
+    if not c['servers']:
+        return False
+    for s in c['servers']:
+        if not resting(s, now):
+            return False
+    return True
+
+
+def grey(c: tuple) -> tuple:
+    y = round(0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2])
+    return (y, y, y)
+
+
+def resting_icon(now: float) -> str:
+    """The Zephyr icon in greyscale. During the shield's gentle shiny flash (brand.gentle_phase — the same 10–15 min
+    schedule as the nebula badge) its glyphs light up one after another, 1·2·3, each easing back to grey."""
+    kind, p, _ = gentle_phase(now, 1.0)
+    cells = ZEPHYR_ICON[0]
+    out = ''
+    for i, (ch, c) in enumerate(cells):
+        col = grey(c)
+        if kind == 'shiny':
+            t = p * len(cells) - i                 # this glyph's own share of the sweep, 0..1
+            if 0 <= t < 1:
+                col = _blend(col, _holo(c, i, 0, t, len(cells)), math.sin(math.pi * t))
+        out += f"\x1b[38;2;{col[0]};{col[1]};{col[2]}m{ch}{RESET}"
+    return out
+
+
 def render(c: dict, session_id: str, key: str, stale: bool, icon: str) -> str:
     many = len(c['servers']) > 1
     parts = []
@@ -252,6 +318,8 @@ def render(c: dict, session_id: str, key: str, stale: bool, icon: str) -> str:
     if not parts:
         if c['newest_package'] is not None:
             parts.append(package_state(c['newest_package'], in_use(session_id, key)))
+        elif all_resting(c, time.time()):
+            parts.append(f"{GREY}Zephyr is resting — say \"hypernym go\" later{RESET}")
         else:
             parts.append(f"{GREY}not analyzed yet — say \"hypernym go\"{RESET}")
     tail = ''
@@ -279,10 +347,8 @@ def main() -> None:
         return
     STATUS.mkdir(parents=True, exist_ok=True)
     cache = STATUS / f"{key.replace('/', '__')}.json"
-    stale = not cache.exists() or time.time() - cache.stat().st_mtime > REFRESH_S
-    if stale:
-        refresh(cwd, key)
     if not cache.exists():
+        refresh(cwd, key)
         # First tick in a repo: say something useful right away, not an ellipsis, while the refresh runs.
         print(f"{CLOUD} {SKY}checking Zephyr {CLOCK[int(time.time()) % len(CLOCK)]}{RESET}")
         return
@@ -290,9 +356,20 @@ def main() -> None:
         c = json.loads(cache.read_text())
     except json.JSONDecodeError:
         # Damaged cache: the next refresh rewrites it; until then say so plainly, never a traceback.
+        refresh(cwd, key)
         print(f"{CLOUD} {SKY}checking Zephyr {CLOCK[int(time.time()) % len(CLOCK)]}{RESET}")
         return
-    icon = icon_flash(ZEPHYR_ICON, f"zephyr:{event['session_id']}", zephyr_signature(c), time.time())
+    now = time.time()
+    every = REFRESH_S
+    if all_resting(c, now):
+        every = AWAY_REFRESH_S
+    stale = now - cache.stat().st_mtime > every
+    if stale:
+        refresh(cwd, key)
+    if all_resting(c, now):
+        icon = resting_icon(now)
+    else:
+        icon = icon_flash(ZEPHYR_ICON, f"zephyr:{event['session_id']}", zephyr_signature(c), now)
     print(render(c, event['session_id'], key, stale, icon))
 
 

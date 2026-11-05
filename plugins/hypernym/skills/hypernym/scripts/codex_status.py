@@ -3,8 +3,8 @@
 CODEX ONLY — the Zephyr status row, shown inside the Codex conversation (2026-10-19).
 
 Codex has no status line a plugin can draw, so the row Claude Code's status line shows (statusline.py — the same words,
-colours and states: analyzing 15/37 files 41%, analysis complete — 38 files, top up to keep going, reconnecting to
-Zephyr — patience …) is shown the way nebula's score line is: as the hook's systemMessage, which Codex prints in the
+colours and states: analyzing 15/37 files 41%, analysis complete — 38 files, top up to keep going, analysis continues
+when Zephyr returns …) is shown the way nebula's score line is: as the hook's systemMessage, which Codex prints in the
 conversation as `↳ Hook · <row>`.
   SessionStart (startup / resume / clear): the current row, once — unless the Zephyr cache is still being filled
                 ("checking Zephyr") or this is not a GitHub repo (session_context says nothing there either).

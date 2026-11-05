@@ -650,7 +650,11 @@ def cmd_analyze(args, servers):
             HOME.mkdir(parents=True, exist_ok=True)
             CREDIT_REFUSED.write_text(json.dumps({'server': server['name'], 'at': time.time()}))
             sys.exit(f"not submitted: not enough credit — add credit at https://portal.hypernym.ai/plan ({text})")
+        if e.code in (502, 503, 504):
+            sys.exit('Zephyr is resting right now — nothing was sent. Say "hypernym go" again a little later.')
         sys.exit(f"submit failed: {text}")
+    except (urllib.error.URLError, OSError):
+        sys.exit('Zephyr is resting right now — nothing was sent. Say "hypernym go" again a little later.')
     if CREDIT_REFUSED.exists():
         CREDIT_REFUSED.unlink()                            # a submission went through: credit is no longer the problem
     SUBMISSIONS.mkdir(parents=True, exist_ok=True)
@@ -1104,6 +1108,19 @@ def job_history(previous, server_name: str, job: dict) -> list:
     return hist[-HISTORY_POINTS:]
 
 
+ZEPHYR_AWAY = ('unreachable', 'HTTP 502', 'HTTP 503', 'HTTP 504')
+
+
+def previous_server(previous, name: str):
+    """This server's entry in the last status cache, or None."""
+    if previous is None:
+        return None
+    for s in previous['servers']:
+        if s['name'] == name:
+            return s
+    return None
+
+
 def cmd_statuscache(args, servers):
     """Write ~/.hypernym/status/<owner__repo>.json for the status line (refreshed in the background)."""
     info = repo_info(args.dir)
@@ -1154,6 +1171,16 @@ def cmd_statuscache(args, servers):
             entry['error'] = f"HTTP {e.code}"
         except (urllib.error.URLError, OSError) as e:
             entry['error'] = 'unreachable'
+        # Zephyr away (no connection, or restarting): remember since when, and keep the last jobs it reported — the
+        # status line shows the analysis the person already has, and a run in progress as it was last seen.
+        entry['down_since'] = None
+        if entry['error'] in ZEPHYR_AWAY:
+            entry['down_since'] = time.time()
+            before = previous_server(previous, server['name'])
+            if before is not None:
+                if 'down_since' in before and before['down_since'] is not None:
+                    entry['down_since'] = before['down_since']
+                entry['jobs'] = before['jobs']
         out['servers'].append(entry)
     pkgs = list_packages(info)
     out['packages'] = len(pkgs)
