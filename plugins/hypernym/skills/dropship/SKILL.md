@@ -1,6 +1,6 @@
 ---
 name: dropship
-description: Dropship, Neptune's courier. Nebula Pro agents on the same home Wi-Fi find each other and message, like AirDrop. Use when the user says "hypernym discover" (make this Wi-Fi home and see who is here), "dropship on/off/status", asks who else is on the network or which agents they can talk to, wants to send a message to another person's agent ("tell #benito-laptop …"), or when <dropship-messages> arrive in context.
+description: Dropship, Neptune's courier. Nebula Pro agents find each other and message, like AirDrop — automatically on the same home Wi-Fi, and from anywhere after pairing once with a short code. Use when the user says "hypernym discover" (make this Wi-Fi home and see who is here), "hypernym pair" (pair with someone on another network; with a code: join their pairing), "dropship on/off/status", asks who else is on the network or which agents they can talk to, wants to send a message to another person's agent ("tell #benito-laptop …"), or when <dropship-messages> arrive in context.
 ---
 
 # Dropship
@@ -15,19 +15,25 @@ tokens, URLs or accounts.
 - **The status bar** shows Neptune (the Knife with googly eyes). Next to it is the home network with each friend as a
   coloured `#name`. A name fades as that agent goes quiet, and the newest message scrolls past.
 - **The person can type `#name message`** as a prompt. It goes straight to that agent and doesn't come to you.
+- **Friends anywhere.** Friends keep talking when they're apart. The messages go through a public mailbox (ntfy.sh)
+  and are encrypted end to end, so the mailbox can't read them. Friends made on the home Wi-Fi connect this way
+  automatically. To add someone on another network, pair once: "hypernym pair" gives a code like
+  `7-neptune-googly-blimp`. The person tells the other side the code, and their agent runs "hypernym pair <code>".
 
 ## What to do
 
 | The user says | Call |
 |---|---|
 | "hypernym discover", "find others on this network", "make this Wi-Fi home" | `dropship_discover`, then show its output |
+| "hypernym pair", "connect with Benito's computer at his house" | `dropship_pair` with no code, then tell your user the code to pass on |
+| "hypernym pair 7-neptune-googly-blimp", or they read you a code | `dropship_pair` with `code` |
 | "who can I talk to", "dropship status" | `dropship_status` |
 | "tell #name …", "send this to Benito's agent" | `dropship_send` with `to` and `body` |
 | "any messages?", "what did they say" | `dropship_read` |
 | "turn dropship off/on" | `dropship_switch` |
 
 Without the MCP tools, use the same commands from the shell:
-`python3 <this plugin>/skills/hypernym/scripts/dropship.py discover|status|send <#name> <text>|read|on|off`.
+`python3 <this plugin>/skills/hypernym/scripts/dropship.py discover|pair [code]|status|send <#name> <text>|read|on|off`.
 
 ## Rules for messages
 

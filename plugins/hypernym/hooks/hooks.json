@@ -11,11 +11,11 @@
         "hooks": [ { "type": "command", "timeout": 10,
                      "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/codex_status.py\"" } ] },
       { "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" ensure" } ] }
+                     "command": "py=python3; $py -c 1 2>/dev/null || py=python; $py \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" ensure" } ] }
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" hook-prompt" } ] }
+                     "command": "py=python3; $py -c 1 2>/dev/null || py=python; $py \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" hook-prompt" } ] }
     ],
     "PostToolUse": [
       { "matcher": "Bash|mcp__.*hypernym_load",

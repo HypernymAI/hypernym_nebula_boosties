@@ -2,7 +2,8 @@
 """
 DROPSHIP — Neptune's courier: Nebula Pro agents on the same HOME network find each other and talk, like AirDrop.
 
-Standard library only. NO .get().
+Standard library only (the mailbox half, dropship_mail.py, runs in the daemon's own uv environment). NO .get().
+Runs on macOS, Linux and Windows.
 
 THE PROMISE
   * Home networks only. A network becomes home when the person says "hypernym discover" on it (once; remembered by
@@ -24,6 +25,12 @@ HOW IT TALKS (LAN)
   * Distant: optional relays (Claude-Net style REST: /api/messages, /api/presence) added with `relay-add`; polled by
     the daemon, shown as "distant" in the bar.
 
+FRIENDS ANYWHERE (dropship_mail.py): friends keep talking when they're apart, end-to-end encrypted through a public
+mailbox (ntfy.sh by default). Friends made on the home Wi-Fi swap mailbox keys in their beacons; anyone else pairs
+once with a short spoken code ("hypernym pair" → 7-neptune-googly-blimp; the other side: "hypernym pair <code>").
+The daemon builds its private environment (PyNaCl + spake2, pinned) with uv on first start; without uv it still
+works on the home Wi-Fi and says so.
+
     dropship.py daemon                  the background courier (started by SessionStart via `ensure`)
     dropship.py ensure                  SessionStart hook: start the daemon if Dropship is on and it isn't running
     dropship.py row                     status-line part (stdin: Claude Code's status-line JSON); reads files only
@@ -32,6 +39,7 @@ HOW IT TALKS (LAN)
     dropship.py forget-home             this network is no longer home
     dropship.py on | off | status | peers | read [--all] | name <new name>
     dropship.py send <#name|all> <text>
+    dropship.py pair [code]             no code: start pairing and print a code; with a code: join that pairing
     dropship.py relay-add <label> <url> <token>     ·   dropship.py relay-remove <label>
 """
 import colorsys
@@ -39,9 +47,11 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -54,16 +64,26 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from brand import _blend, _holo, gentle_phase, icon_flash
+
 PROTO = 1
 HOME = Path(os.environ['DROPSHIP_HOME']) if 'DROPSHIP_HOME' in os.environ else Path.home() / '.hypernym' / 'dropship'
 IDENTITY = HOME / 'identity.json'
-CONFIG = HOME / 'config.json'          # {enabled, homes: {fingerprint: label}, relays: [{label, url, token}]}
+CONFIG = HOME / 'config.json'          # {enabled, homes: {fingerprint: label}, relays: [{label, url, token}], mailbox}
 STATE = HOME / 'state.json'            # written by the daemon: network, peers, relays (the bar reads only this)
 FRIENDS = HOME / 'friends.json'        # {peer id: {name, pub}} — trust on first use
 INBOX = HOME / 'inbox.jsonl'           # every message in and out, one JSON object per line
 SESSIONS = HOME / 'sessions'           # per Claude Code session: the last inbox line already shown to Claude
 PIDFILE = HOME / 'daemon.pid'
+STOPFILE = HOME / 'daemon.stop'        # the polite way to stop the daemon on every OS (Windows has no SIGTERM to send)
 LOG = HOME / 'daemon.log'
+OUTBOX = HOME / 'outbox'               # mailbox sends are queued here for the daemon (it holds the crypto)
+PAIRING = HOME / 'pairing.json'        # {code, started}: the pairing the daemon should run now
+VENV = Path(os.environ['DROPSHIP_VENV']) if 'DROPSHIP_VENV' in os.environ else HOME / 'venv'
+REQS = ('pynacl==1.5.0', 'spake2==0.9')
+IS_WIN = sys.platform == 'win32'
+NO_WINDOW = 0x08000000 if IS_WIN else 0      # CREATE_NO_WINDOW: no console flashes from helper commands
+DETACHED = 0x00000008 | 0x00000200 if IS_WIN else 0   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
 MCAST, UDP_PORT = '239.255.77.77', 47777
 TCP_PORT = int(os.environ['DROPSHIP_PORT']) if 'DROPSHIP_PORT' in os.environ else 47778   # tests
@@ -110,7 +130,7 @@ def save(p: Path, data) -> None:
 
 def config() -> dict:
     c = load(CONFIG, {})
-    base = {'enabled': True, 'homes': {}, 'relays': []}
+    base = {'enabled': True, 'homes': {}, 'relays': [], 'mailbox': 'https://ntfy.sh'}
     base.update(c if isinstance(c, dict) else {})
     return base
 
@@ -130,7 +150,8 @@ def log(msg: str) -> None:
 
 # ---------------------------------------------------------------------------------------------------- identity
 def default_name() -> str:
-    raw = f"{os.environ['USER'] if 'USER' in os.environ else 'pilot'}-{socket.gethostname().split('.')[0]}"
+    user = os.environ['USER'] if 'USER' in os.environ else os.environ['USERNAME'] if 'USERNAME' in os.environ else 'pilot'
+    raw = f"{user}-{socket.gethostname().split('.')[0]}"
     name = re.sub(r'[^a-z0-9._-]+', '-', raw.lower()).strip('-')[:32]
     return name if NAME_RE.match(name) else 'pilot'
 
@@ -162,7 +183,7 @@ def sign(key: bytes, msg: dict) -> str:
 # ---------------------------------------------------------------------------------------------------- network
 def _run(argv: list) -> str:
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=3).stdout
+        return subprocess.run(argv, capture_output=True, text=True, timeout=3, creationflags=NO_WINDOW).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ''
 
@@ -170,15 +191,24 @@ def _run(argv: list) -> str:
 def gateway() -> str:
     if sys.platform == 'darwin':
         m = re.search(r'gateway:\s*(\S+)', _run(['route', '-n', 'get', 'default']))
+    elif IS_WIN:                     # "0.0.0.0  0.0.0.0  <gateway>  <interface>  <metric>", lowest metric first
+        rows = re.findall(r'^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)\s+\S+\s+(\d+)',
+                          _run(['route', 'print', '-4', '0.0.0.0']), re.M)
+        return min(rows, key=lambda r: int(r[1]))[0] if rows else ''
     else:
         m = re.search(r'default via (\S+)', _run(['ip', 'route', 'show', 'default']))
     return m.group(1) if m else ''
 
 
 def gateway_mac(gw: str) -> str:
-    out = _run(['arp', '-n', gw]) if sys.platform == 'darwin' else _run(['ip', 'neigh', 'show', gw])
-    m = re.search(r'([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})', out.lower())
-    return ':'.join(x.zfill(2) for x in m.group(1).split(':')) if m else ''
+    if sys.platform == 'darwin':
+        out = _run(['arp', '-n', gw])
+    elif IS_WIN:
+        out = _run(['arp', '-a', gw])                      # "10.0.0.1   aa-bb-cc-dd-ee-ff   dynamic"
+    else:
+        out = _run(['ip', 'neigh', 'show', gw])
+    m = re.search(r'([0-9a-f]{1,2}(?:[:-][0-9a-f]{1,2}){5})', out.lower())
+    return ':'.join(x.zfill(2) for x in re.split('[:-]', m.group(1))) if m else ''
 
 
 def local_ip(gw: str) -> str:
@@ -253,12 +283,97 @@ class Courier:
         self.stop = threading.Event()
         self.http = None
         self.udp = None
+        self.mail = None
+        self.mail_why = ''
+        self.pairing = None        # {code, status: waiting|done|failed, detail, at}
+
+    # -- shared with the mailbox (dropship_mail.Mail)
+    def on_lan(self, pid: str) -> bool:
+        with self.lock:
+            return pid in self.peers and time.time() - self.peers[pid]['last_seen'] < PEER_GONE_S
+
+    def deliver(self, name: str, body: str, via: str, ts: float) -> None:
+        body = clean(body)
+        if body:
+            append_inbox({'dir': 'in', 'via': via, 'from': name, 'to': self.me['name'], 'ts': time.time(), 'body': body})
+
+    def add_friend(self, card: dict, how: str) -> str:
+        """A friend from pairing: {id, name, box, pub}. Returns its name (made unique among friends)."""
+        pid, name = str(card['id'])[:32], clean(card['name'], 32).lower()
+        if not NAME_RE.match(name):
+            name = 'friend-' + pid[:6]
+        with self.lock:
+            taken = {v['name'] for k, v in self.friends.items() if k != pid}
+            base, i = name, 2
+            while name in taken:
+                name, i = f'{base[:29]}-{i}', i + 1
+            self.friends[pid] = {'name': name, 'pub': str(card['pub']), 'box': str(card['box']), 'how': how,
+                                 'since': time.time()}
+            save(FRIENDS, self.friends)
+        log(f'paired with {name} ({pid})')
+        return name
+
+    def start_mail(self):
+        try:
+            import dropship_mail
+        except ImportError as e:
+            self.mail_why = f'no crypto environment ({e.name}); home Wi-Fi only'
+            return
+        if 'box_priv' not in self.me:
+            self.me['box_priv'], self.me['box_pub'] = dropship_mail.new_box_keys()
+            save(IDENTITY, self.me)
+        self.mail = dropship_mail.Mail(self, self.cfg['mailbox'])
+        for t in (self.mail.listen, self.mail.pinger, self.outbox_loop, self.pairing_loop):
+            threading.Thread(target=t, daemon=True).start()
+
+    def outbox_loop(self):
+        while not self.stop.is_set():
+            for req in sorted(OUTBOX.glob('*.json')):
+                job = load(req, None)
+                result = 'not delivered (bad request)'
+                try:
+                    with self.lock:
+                        friend = next((dict(v, id=k) for k, v in self.friends.items()
+                                       if v['name'] == job['to'] and 'box' in v), None)
+                    if friend is None:
+                        result = f"#{job['to']} isn't a friend with a mailbox key"
+                    else:
+                        self.mail.send(friend, job['body'])
+                        append_inbox({'dir': 'out', 'via': 'mailbox', 'from': self.me['name'], 'to': friend['name'],
+                                      'ts': time.time(), 'body': job['body']})
+                        result = 'ok'
+                except (OSError, ValueError, KeyError, TypeError) as e:
+                    result = f'not delivered ({e})'[:200]
+                save(req.with_suffix('.done'), {'result': result})
+                try:
+                    req.unlink()
+                except OSError:
+                    pass
+            self.stop.wait(0.3)
+
+    def pairing_loop(self):
+        while not self.stop.is_set():
+            job = load(PAIRING, None)
+            if isinstance(job, dict) and 'code' in job and job['status'] == 'new':
+                job['status'] = 'waiting'
+                save(PAIRING, job)
+                self.pairing = dict(job)
+
+                def done(status, detail, job=job):
+                    job.update({'status': status, 'detail': detail, 'at': time.time()})
+                    save(PAIRING, job)
+                    self.pairing = dict(job)
+                    log(f"pairing {status}: {detail}")
+                self.mail.pair(job['code'], done,
+                               lambda code=job['code'], t=job['started']: load(PAIRING, {'code': '', 'started': 0})['code'] == code
+                               and load(PAIRING, {'code': '', 'started': 0})['started'] == t)
+            self.stop.wait(1)
 
     # -- network watch: open sockets only at home
     def watch(self):
         while not self.stop.is_set():
             self.cfg = config()
-            if not self.cfg['enabled']:
+            if not self.cfg['enabled'] or STOPFILE.exists():
                 self.stop.set()
                 break
             self.net = network()
@@ -307,8 +422,11 @@ class Courier:
 
     def beacon(self):
         while self.home and not self.stop.is_set():
-            b = json.dumps({'dropship': PROTO, 'id': self.me['id'], 'name': self.me['name'], 'port': TCP_PORT,
-                            'pub': self.me['pub']}).encode()
+            card = {'dropship': PROTO, 'id': self.me['id'], 'name': self.me['name'], 'port': TCP_PORT,
+                    'pub': self.me['pub']}
+            if self.mail is not None:
+                card['box'] = self.me['box_pub']          # so friends made here keep talking when apart
+            b = json.dumps(card).encode()
             for dst in (MCAST, '255.255.255.255'):
                 try:
                     self.udp.sendto(b, (dst, UDP_PORT))
@@ -329,25 +447,31 @@ class Courier:
                 if b['dropship'] != PROTO or b['id'] == self.me['id'] or not private_source(addr):
                     continue
                 name, pid, pub, port = clean(b['name'], 32).lower(), str(b['id'])[:32], str(b['pub']), int(b['port'])
+                box = str(b['box'])[:64] if 'box' in b else ''
             except (ValueError, KeyError, TypeError):
                 continue
             if not NAME_RE.match(name):
                 continue
-            self.befriend(pid, name, pub, addr, port)
+            self.befriend(pid, name, pub, addr, port, box)
 
-    def befriend(self, pid, name, pub, addr, port):
+    def befriend(self, pid, name, pub, addr, port, box=''):
         with self.lock:
             known = self.friends[pid] if pid in self.friends else None
-            if known is not None and known['pub'] != pub:
+            if known is not None and (known['pub'] != pub or (box and 'box' in known and known['box'] != box)):
                 w = f'{name}: key changed — refused (forget it with `dropship.py forget {name}` if this is expected)'
                 if w not in self.warnings:
                     self.warnings.append(w)
                     log(w)
                 return
             if known is None:
-                self.friends[pid] = {'name': name, 'pub': pub, 'since': time.time()}
+                self.friends[pid] = {'name': name, 'pub': pub, 'how': 'home wi-fi', 'since': time.time()}
+                if box:
+                    self.friends[pid]['box'] = box
                 save(FRIENDS, self.friends)
                 log(f'new friend {name} ({pid}) at {addr}')
+            elif box and 'box' not in known:
+                known['box'] = box
+                save(FRIENDS, self.friends)
             self.peers[pid] = {'name': name, 'ip': addr, 'port': port, 'pub': pub, 'last_seen': time.time(),
                                'kind': 'lan'}
 
@@ -382,7 +506,7 @@ class Courier:
         body = clean(msg['body'])
         if not body:
             return 400, 'empty'
-        append_inbox({'dir': 'in', 'via': 'lan', 'from': peer['name'], 'to': msg['to'], 'ts': now, 'body': body})
+        self.deliver(peer['name'], body, 'lan', now)
         return 200, 'ok'
 
     # -- distant relays
@@ -421,19 +545,33 @@ class Courier:
                      'home': self.home, 'net': self.net, 'enabled': self.cfg['enabled'],
                      'peers': [{k: v[k] for k in ('name', 'ip', 'port', 'last_seen', 'kind')} | {'id': pid}
                                for pid, v in self.peers.items()],
-                     'relays': self.relays, 'warnings': self.warnings[-3:]}
+                     'relays': self.relays, 'warnings': self.warnings[-3:],
+                     'mail': {'ok': self.mail is not None and not self.mail.error,
+                              'why': self.mail_why or (self.mail.error if self.mail is not None else ''),
+                              'friends': [v['name'] for v in self.friends.values() if 'box' in v and self.mail is not None],
+                              'last_seen': {self.friends[k]['name']: t for k, t in
+                                            (self.mail.last_seen.items() if self.mail is not None else [])
+                                            if k in self.friends}},
+                     'pairing': self.pairing}
             save(STATE, s)
             self.stop.wait(STATE_S)
 
     def run(self):
         _private_dir()
+        OUTBOX.mkdir(exist_ok=True)
+        try:
+            STOPFILE.unlink()
+        except OSError:
+            pass
         PIDFILE.write_text(str(os.getpid()))
         signal.signal(signal.SIGTERM, lambda *_: self.stop.set())
+        self.start_mail()
         for t in (self.watch, self.poll_relays, self.publish):
             threading.Thread(target=t, daemon=True).start()
         log(f"daemon up as {self.me['name']} ({self.me['id']})")
         while not self.stop.wait(1):
-            pass
+            if STOPFILE.exists():
+                self.stop.set()
         self.close_lan()
         save(STATE, {'pid': None, 'at': time.time(), 'enabled': config()['enabled'], 'home': False, 'peers': [],
                      'relays': {}, 'me': {'id': self.me['id'], 'name': self.me['name']}, 'net': self.net,
@@ -486,29 +624,88 @@ def _relay_post(r: dict, path: str, data: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------------- client side
-def running() -> bool:
+def pid_alive(pid: int) -> bool:
+    if IS_WIN:                     # os.kill(pid, 0) on Windows would TERMINATE the process: ask the kernel instead
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return code.value == 259                                          # STILL_ACTIVE
     try:
-        pid = int(PIDFILE.read_text())
         os.kill(pid, 0)
         return True
+    except OSError:
+        return False
+
+
+def running() -> bool:
+    try:
+        return pid_alive(int(PIDFILE.read_text()))
     except (OSError, ValueError):
         return False
+
+
+def _spawn(argv: list) -> None:
+    _private_dir()
+    with open(LOG, 'a') as lf:
+        if IS_WIN:
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf, close_fds=True,
+                             creationflags=DETACHED | NO_WINDOW)
+        else:
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf, close_fds=True,
+                             start_new_session=True)
 
 
 def start_daemon() -> None:
     if running() or not config()['enabled']:
         return
-    _private_dir()
-    with open(LOG, 'a') as lf:
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'daemon'], stdin=subprocess.DEVNULL,
-                         stdout=lf, stderr=lf, start_new_session=True, close_fds=True)
+    _spawn([sys.executable, str(Path(__file__).resolve()), 'daemon'])
 
 
 def stop_daemon() -> None:
+    _private_dir()
+    STOPFILE.write_text('stop')
+    deadline = time.time() + 5
+    while running() and time.time() < deadline:
+        time.sleep(0.2)
+
+
+def venv_python() -> Path:
+    return VENV / 'Scripts' / 'python.exe' if IS_WIN else VENV / 'bin' / 'python'
+
+
+def venv_ready() -> bool:
+    marker = VENV / '.dropship_ready'
+    return venv_python().exists() and marker.exists() and marker.read_text() == ' '.join(REQS)
+
+
+def find_uv() -> str:
+    found = shutil.which('uv')
+    if found:
+        return found
+    for c in (Path.home() / '.local' / 'bin' / ('uv.exe' if IS_WIN else 'uv'), Path.home() / '.cargo' / 'bin' / 'uv'):
+        if c.exists():
+            return str(c)
+    return ''
+
+
+def build_venv() -> str:
+    """The daemon's private environment (pinned PyNaCl + spake2). '' when ready, else why not."""
+    uv = find_uv()
+    if not uv:
+        return 'uv not found (install: https://docs.astral.sh/uv/) — home Wi-Fi only until then'
     try:
-        os.kill(int(PIDFILE.read_text()), signal.SIGTERM)
-    except (OSError, ValueError):
-        pass
+        subprocess.run([uv, 'venv', '-q', '--allow-existing', str(VENV)], check=True, capture_output=True, timeout=120,
+                       creationflags=NO_WINDOW)
+        subprocess.run([uv, 'pip', 'install', '-q', '--python', str(venv_python()), *REQS], check=True,
+                       capture_output=True, timeout=300, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f'could not build the crypto environment: {e}'[:200]
+    (VENV / '.dropship_ready').write_text(' '.join(REQS))
+    return ''
 
 
 def state() -> dict:
@@ -525,11 +722,39 @@ def directory() -> dict:
             for n in info['participants']:
                 if n != info['you']:
                     out[n] = {'kind': 'relay', 'relay': relays[label], 'label': label}
+    if 'mail' in s and s['mail']['ok']:
+        for n in s['mail']['friends']:
+            out[n] = {'kind': 'mail'}
     now = time.time()
     for p in s['peers']:
         if p['kind'] == 'lan' and now - p['last_seen'] < PEER_GONE_S:
             out[p['name']] = dict(p)
     return out
+
+
+def where(v: dict) -> str:
+    return {'lan': 'home wi-fi', 'mail': 'mailbox'}[v['kind']] if v['kind'] in ('lan', 'mail') else v['label']
+
+
+def send_mail(name: str, body: str) -> str:
+    """Queue a mailbox send for the daemon (it holds the keys) and wait for its answer."""
+    _private_dir()
+    OUTBOX.mkdir(exist_ok=True)
+    rid = f'{time.time():.6f}-{secrets.token_hex(4)}'
+    req = OUTBOX / f'{rid}.json'
+    save(req, {'to': name, 'body': body})
+    done = req.with_suffix('.done')
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if done.exists():
+            r = load(done, {'result': 'unknown'})['result']
+            try:
+                done.unlink()
+            except OSError:
+                pass
+            return r
+        time.sleep(0.2)
+    return 'queued (the courier will send it when it can)'
 
 
 def send(to: str, body: str) -> str:
@@ -546,6 +771,12 @@ def send(to: str, body: str) -> str:
         try:
             if t['kind'] == 'relay':
                 _relay_post(t['relay'], '/api/messages', {'body': body, 'to': name})
+            elif t['kind'] == 'mail':
+                r = send_mail(name, body)
+                if r != 'ok' and not r.startswith('queued'):
+                    raise ValueError(r)
+                sent.append(name)
+                continue                                    # the daemon logged it in the inbox
             else:
                 peer = friends[t['id']]
                 msg = {'from': me['id'], 'to': name, 'ts': time.time(), 'nonce': secrets.token_hex(12), 'body': body}
@@ -554,7 +785,7 @@ def send(to: str, body: str) -> str:
                                              method='POST', headers={'Content-Type': 'application/json'})
                 urllib.request.urlopen(req, timeout=5).read()
             sent.append(name)
-            append_inbox({'dir': 'out', 'via': t['kind'] if t['kind'] == 'lan' else t['label'], 'from': me['name'],
+            append_inbox({'dir': 'out', 'via': where(t), 'from': me['name'],
                           'to': name, 'ts': time.time(), 'body': body})
         except (OSError, KeyError, ValueError) as e:
             return f'#{name}: not delivered ({e})' + (f"; delivered to {', '.join('#' + s for s in sent)}" if sent else '')
@@ -584,12 +815,19 @@ def as_context(msgs: list) -> str:
 
 
 # ---------------------------------------------------------------------------------------------------- the bar
-NEPTUNE_CYAN, NEPTUNE_TEAL, ICE, GLOW = (64, 220, 255), (40, 170, 200), (190, 240, 255), (255, 255, 255)
-# Neptune, the Knife: a sleek hull flying nose-first (teal → cyan → ice), its glowing nose light, and the two
-# crooked googly eyes the pilot asked for (one big and high, one small and low).
-NEPTUNE_ICON = ((('⣠', NEPTUNE_TEAL), ('⣶', NEPTUNE_CYAN), ('⣿', NEPTUNE_CYAN), ('⣷', ICE), ('⠟', ICE),
-                 ('⢁', GLOW)),)
-EYE = (250, 250, 250)
+NEPTUNE_CYAN, NEPTUNE_TEAL, GLOW = (64, 220, 255), (40, 170, 200), (225, 250, 255)
+# NEPTUNE — the pilot's ship, "the cute speed-blimp" (claudestorm NEPTUNE_VS_SMATTER… / helen_lab kids view): 3 cells
+# like every other badge icon (ZEPHYR ⢤⣶⡾, WINGS), nose-first to the right, two crooked googly-eye holes (one high,
+# one low, too far apart — "the work of a 2-year-old") just behind the glowing nose. Contact sheet #5 of 6 (2026-11-13):
+#           ..###.     teal tail · cyan body · glow nose
+#           ##.#.#     holes at (1,2) and (1,4)/(2,4): the googly eyes
+#           ####.#
+#           ..###.
+NEPTUNE_ICON = ((('⠶', NEPTUNE_TEAL), ('⣽', NEPTUNE_CYAN), ('⡱', GLOW)),)
+GREY_TXT = (110, 114, 120)
+WIDTH = 40                              # visible columns after the logo, at most
+NAME_W, MAX_TAGS, NEWS_S, NEWS_W = 10, 3, 20.0, 20
+ANSI = re.compile(r'\x1b\[[0-9;]*m')
 
 
 def _rgb(c, text):
@@ -600,36 +838,78 @@ def _mix(a, b, t):
     return tuple(int(round(x + (y - x) * t)) for x, y in zip(a, b))
 
 
+def _dim(text):
+    return f'\x1b[2m{text}\x1b[0m'
+
+
 def peer_colour(name: str):
     h = int(hashlib.sha256(name.encode()).hexdigest()[:6], 16)
     r, g, b = colorsys.hls_to_rgb((h % 360) / 360, 0.66, 0.85)
     return int(r * 255), int(g * 255), int(b * 255)
 
 
-def neptune(now: float) -> str:
-    """The Knife, with its googly eyes; the pupils wobble a little (the 'moves')."""
-    hull = ''.join(_rgb(c, ch) for ch, c in NEPTUNE_ICON[0])
-    wobble = '⠪⠂' if int(now * 2) % 4 else '⠕⠂'
-    return hull + _rgb(EYE, wobble)
+def neptune(alive: bool, signature: str, key: str, now: float) -> str:
+    """Friends here: full colour, with the shared holographic update flash (brand.icon_flash) whenever a message lands
+    or someone arrives/leaves. Alone or away: resting grey, its glyphs lighting up 1·2·3 during the shield's gentle
+    flash — the same rest as the Zephyr icon (statusline.resting_icon)."""
+    if alive:
+        return icon_flash(NEPTUNE_ICON, key, signature, now)
+    kind, p, _ = gentle_phase(now, 1.0)
+    out = ''
+    for i, (ch, c) in enumerate(NEPTUNE_ICON[0]):
+        g = int(round(0.30 * c[0] + 0.59 * c[1] + 0.11 * c[2]))
+        col = (g, g, g)
+        if kind == 'shiny':
+            t = p * len(NEPTUNE_ICON[0]) - i
+            if 0 <= t < 1:
+                col = _blend(col, _holo(c, i, 0, t, len(NEPTUNE_ICON[0])), math.sin(math.pi * t))
+        out += _rgb(col, ch)
+    return out
 
 
-def tag(name: str, age: float, unread: int, now: float) -> str:
-    """#name in its own colour; fades toward grey as it goes quiet; ● online, ○ gone."""
-    base, grey = peer_colour(name), (110, 114, 120)
+def short(name: str) -> str:
+    return name if len(name) <= NAME_W else name[:NAME_W - 1] + '…'
+
+
+def tag(name: str, age: float, unread: int) -> str:
+    """#name in its own colour, fading to grey as it goes quiet (the fade IS the liveness)."""
     fade = 0.0 if age < 20 else min(1.0, (age - 20) / 280)
-    c = _mix(base, grey, fade)
-    dot = '●' if age < PEER_GONE_S else '○'
     badge = _rgb((255, 210, 90), f'⁺{unread}') if unread else ''
-    return _rgb(c, f'{dot}#{name}') + badge
+    return _rgb(_mix(peer_colour(name), GREY_TXT, fade), f'#{short(name)}') + badge
 
 
-def marquee(text: str, now: float, width: int = 36) -> str:
-    text = text.replace('\n', ' ')
+def tags(entries: list) -> str:
+    """entries: (name, age, unread), freshest first; MAX_TAGS shown, then +N."""
+    shown = ' '.join(tag(*e) for e in entries[:MAX_TAGS])
+    more = len(entries) - MAX_TAGS
+    return shown + (_dim(f' +{more}') if more > 0 else '')
+
+
+def marquee(text: str, elapsed: float, width: int = NEWS_W) -> str:
+    """The message from its first word, sliding left 3 characters a second since it arrived (1 s held at the start)."""
+    text = ' '.join(text.split())
     if len(text) <= width:
         return text
-    loop = text + '   ·   '
-    i = int(now * 4) % len(loop)
+    loop = text + '  ·  '
+    i = int(max(0.0, elapsed - 1.0) * 3) % len(loop)
     return (loop + loop)[i:i + width]
+
+
+def clip(styled: str, width: int = WIDTH) -> str:
+    """Cut a styled string to `width` visible columns, keeping its colour codes intact."""
+    out, n, pos = '', 0, 0
+    for m in ANSI.finditer(styled):
+        for ch in styled[pos:m.start()]:
+            if n >= width:
+                return out + '\x1b[0m'
+            out, n = out + ch, n + 1
+        out += m.group(0)
+        pos = m.end()
+    for ch in styled[pos:]:
+        if n >= width:
+            return out + '\x1b[0m'
+        out, n = out + ch, n + 1
+    return out
 
 
 def row(event: str) -> str:
@@ -639,8 +919,6 @@ def row(event: str) -> str:
     if not running():
         start_daemon()
     s, now = state(), time.time()
-    dim = lambda t: f'\x1b[2m{t}\x1b[0m'
-    parts = [neptune(now)]
     msgs = inbox()
     sid = ''
     try:
@@ -652,31 +930,45 @@ def row(event: str) -> str:
     for m in msgs:
         if m['dir'] == 'in' and seen is not None and m['n'] > seen:
             unread[m['from']] = (unread[m['from']] if m['from'] in unread else 0) + 1
+    near, far = [], []                                    # (name, age, unread), freshest first
     if s['home']:
-        lan = sorted((p for p in s['peers'] if p['kind'] == 'lan'), key=lambda p: p['name'])
-        tags = ' '.join(tag(p['name'], now - p['last_seen'], unread[p['name']] if p['name'] in unread else 0, now)
-                        for p in lan)
-        parts.append(_rgb(NEPTUNE_CYAN, '⌂ home') + ' ' + (tags or dim('looking for friends…')))
-    elif cfg['homes']:
-        parts.append(dim('⌂ away from home — quiet'))
-    else:
-        parts.append(dim('say "hypernym discover" on your home Wi-Fi'))
+        near = sorted(((p['name'], now - p['last_seen'], unread[p['name']] if p['name'] in unread else 0)
+                       for p in s['peers'] if p['kind'] == 'lan'), key=lambda e: e[1])
     for label, info in sorted(s['relays'].items()):
-        if not info['ok']:
-            parts.append(dim(f'✈ {label} unreachable'))
-            continue
-        tags = ' '.join(tag(n, info['now'] - (info['last_seen'][n] if n in info['last_seen'] else 0),
-                            unread[n] if n in unread else 0, now)
-                        for n in sorted(info['participants']) if n != info['you'])
-        parts.append(_rgb(NEPTUNE_TEAL, f'✈ {label}') + ' ' + tags)
+        if info['ok']:
+            for n in info['participants']:
+                age = info['now'] - info['last_seen'][n] if n in info['last_seen'] else 1e9
+                if n != info['you'] and age < 300:
+                    far.append((n, age, unread[n] if n in unread else 0))
+    if 'mail' in s and s['mail']['ok']:
+        lan_names = {e[0] for e in near if e[1] < PEER_GONE_S}
+        for n in s['mail']['friends']:
+            if n not in lan_names and n not in {e[0] for e in far}:
+                age = now - s['mail']['last_seen'][n] if n in s['mail']['last_seen'] else 1e9
+                if age < 300:
+                    far.append((n, age, unread[n] if n in unread else 0))
+    far.sort(key=lambda e: e[1])
+    alive = [e for e in near + far if e[1] < PEER_GONE_S]
     latest = next((m for m in reversed(msgs) if m['dir'] == 'in'), None)
-    if latest is not None and now - latest['ts'] < 90:
-        fresh = 1.0 if now - latest['ts'] < 45 else 1 - (now - latest['ts'] - 45) / 45
-        c = _mix((120, 120, 120), peer_colour(latest['from']), fresh)
-        parts.append(_rgb(c, f"⇣ #{latest['from']}: {marquee(latest['body'], now)}"))
-    for w in s['warnings']:
-        parts.append(_rgb((255, 190, 90), f'⚠ {w[:60]}'))
-    return '  '.join(parts)
+    signature = f"{latest['n'] if latest else 0}|{','.join(sorted(e[0] for e in alive))}"
+    icon = neptune(bool(alive), signature, f'dropship:{sid}', now)
+    if latest is not None and now - latest['ts'] < NEWS_S:          # news slides through in place of the tags
+        body = _rgb(peer_colour(latest['from']), f"⇣#{short(latest['from'])}: ") + marquee(latest['body'], now - latest['ts'])
+    elif s['home']:
+        body = _rgb(NEPTUNE_CYAN, '⌂') + ' ' + (tags(near) if near else _dim('·'))
+        if far:
+            body += ' ' + _rgb(NEPTUNE_TEAL, '✈') + ' ' + tags(far)
+    elif far:
+        body = _rgb(NEPTUNE_TEAL, '✈') + ' ' + tags(far)
+    elif cfg['homes']:
+        body = _dim('⌂ quiet')
+    else:
+        body = _dim('⌂ say "hypernym discover"')
+    if 'pairing' in s and s['pairing'] is not None and s['pairing']['status'] in ('new', 'waiting'):
+        body = _rgb(NEPTUNE_CYAN, '⇄ ') + _dim(s['pairing']['code'])
+    if s['warnings']:
+        body += ' ' + _rgb((255, 190, 90), '⚠')
+    return icon + ' ' + clip(body, WIDTH - 4)
 
 
 # ---------------------------------------------------------------------------------------------------- hooks
@@ -730,6 +1022,36 @@ def discover() -> str:
                'Nobody else here yet; they show up in the status bar as soon as their Nebula Pro says "hypernym discover".'))
 
 
+def pair(code: str) -> str:
+    s = state()
+    if not running():
+        start_daemon()
+    if 'mail' not in s or not s['mail']['ok']:
+        time.sleep(3)
+        s = state()
+    if 'mail' not in s or not s['mail']['ok']:
+        why = s['mail']['why'] if 'mail' in s else 'the courier is still starting'
+        return f'Dropship: pairing needs the mailbox, which is not ready: {why or "starting up — try again in a minute"}.'
+    joining = bool(code)
+    if not joining:
+        words = 'anchor beacon blimp comet coral ember fern googly harbor kite lantern lunar meadow nebula neptune ' \
+                'nova orbit otter pebble pixel prism quill reef rocket sail spark tide trident wave willow zephyr'
+        code = f"{secrets.randbelow(98) + 2}-" + '-'.join(secrets.choice(words.split()) for _ in range(3))
+    code = '-'.join(code.strip().lower().replace(' ', '-').split('-'))
+    save(PAIRING, {'code': code, 'status': 'new', 'started': time.time()})
+    if not joining:
+        return (f'Dropship pairing code: {code}\nTell it to the other person; their agent runs "hypernym pair {code}". '
+                'It works from any network for the next 10 minutes. Once paired you can message each other anywhere.')
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        job = load(PAIRING, {'status': 'new'})
+        if job['status'] in ('done', 'failed'):
+            return (f"Dropship: paired with #{job['detail']}. You can message each other from anywhere now."
+                    if job['status'] == 'done' else f"Dropship: pairing failed — {job['detail']}.")
+        time.sleep(1)
+    return 'Dropship: still pairing (the other side may not have started yet); it keeps trying for 10 minutes.'
+
+
 def status_text() -> str:
     cfg, s = config(), state()
     d = directory()
@@ -737,8 +1059,14 @@ def status_text() -> str:
              f"you are #{identity()['name']}.",
              f"This network: {'HOME' if s['home'] else 'not home (quiet: nothing sent or heard)'}; "
              f"{len(cfg['homes'])} home network(s) remembered.",
-             'Reachable: ' + (', '.join(f"#{n} ({v['kind'] if v['kind'] == 'lan' else v['label']})"
+             'Reachable: ' + (', '.join(f"#{n} ({where(v)})"
                                        for n, v in sorted(d.items())) or 'nobody right now')]
+    if 'mail' in s:
+        lines.append('Mailbox (friends anywhere, end-to-end encrypted): '
+                     + ('ready' if s['mail']['ok'] else f"not ready — {s['mail']['why'] or 'starting'}")
+                     + f" via {cfg['mailbox']}")
+    if 'pairing' in s and s['pairing'] is not None and s['pairing']['status'] in ('new', 'waiting'):
+        lines.append(f"Pairing in progress: {s['pairing']['code']}")
     lines += [f'Warning: {w}' for w in s['warnings']]
     return '\n'.join(lines)
 
@@ -748,6 +1076,13 @@ def main() -> int:
     if a == ['daemon']:
         if running():
             return 0
+        if Path(sys.prefix).resolve() != VENV.resolve():          # not yet in the crypto environment
+            why = '' if venv_ready() else build_venv()
+            if why:
+                log(why)
+            elif venv_ready():
+                _spawn([str(venv_python()), str(Path(__file__).resolve()), 'daemon'])
+                return 0
         Courier().run()
         return 0
     if a == ['ensure']:
@@ -782,11 +1117,14 @@ def main() -> int:
         print(status_text())
         return 0
     if a == ['peers']:
-        print(json.dumps({n: (v['kind'] if v['kind'] == 'lan' else v['label']) for n, v in directory().items()}))
+        print(json.dumps({n: where(v) for n, v in directory().items()}))
         return 0
     if a in (['read'], ['read', '--all']):
         msgs = inbox() if a == ['read', '--all'] else unread_for('cli')
         print(as_context(msgs) if msgs else 'No new Dropship messages.')
+        return 0
+    if a and a[0] == 'pair' and len(a) <= 2:
+        print(pair(a[1] if len(a) == 2 else ''))
         return 0
     if len(a) >= 3 and a[0] == 'send':
         print(send(a[1], ' '.join(a[2:])))

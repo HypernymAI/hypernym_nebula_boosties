@@ -27,8 +27,9 @@ Linux; nothing is blended then, so no colour is guessed) is drawn at the left; t
 and the wings + HYPERNYM.ai wordmark; hypernym's Zephyr line rides the LAST row. Brand settings come from nebula's
 settings when present (~/.nebula/config.json → brand), else BRAND_DEFAULTS (= nebula's shipped defaults).
 A part that fails shows "✖ <plugin>: <reason>" — never a blank line.
-DROPSHIP (v14): when hypernym is installed and its scripts carry dropship.py, Dropship's row (Neptune + who is here on
-the home network / distant relays + the latest message) rides ABOVE the logo rows. Empty when Dropship is off.
+DROPSHIP (v15): when hypernym is installed and its scripts carry dropship.py, Dropship's row (Neptune + who is here on
+the home network / distant relays + the latest message) rides the logo's TOP row (v14 put it on a line above the
+logo — the pilot: "it needs to be on the top line, not above the top line"). Empty when Dropship is off.
 NO .get(). Imports at top.
 """
 import json
@@ -44,7 +45,7 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 14                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 15                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'                # the shield's home (public)
 MARKETPLACES = ('hypernym-nebula', 'hypernym-nebula-pro')    # either plugin is found under either name
 HOME = {'nebula': 'hypernym-nebula', 'hypernym': 'hypernym-nebula-pro'}   # where each one is installed FROM
@@ -196,7 +197,7 @@ def compose(event: str) -> list:
                 rows = [ln for ln in so.splitlines() if ln.strip()]
                 out[name] = rows if rows else [f"✖ {name}: printed nothing"]
         except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGTERM)       # the whole part (uv → python), so a hang never piles up
+            (os.killpg(p.pid, signal.SIGTERM) if hasattr(os, 'killpg') else p.kill())       # the whole part (uv → python), so a hang never piles up
             out[name] = [f"✖ {name}: no answer within {TIMEOUT_S:.0f} s"]
     top = []
     if ship is not None:
@@ -206,9 +207,9 @@ def compose(event: str) -> list:
             else:
                 top = [f"✖ dropship: {last_words(ship.stderr.read())}"]
         except subprocess.TimeoutExpired:
-            os.killpg(ship.pid, signal.SIGTERM)
-    return top + layout(out['nebula'] if 'nebula' in out else [],
-                        '  '.join(out['hypernym']) if 'hypernym' in out else '', time.time())
+            (os.killpg(ship.pid, signal.SIGTERM) if hasattr(os, 'killpg') else ship.kill())
+    return layout(out['nebula'] if 'nebula' in out else [],
+                  '  '.join(out['hypernym']) if 'hypernym' in out else '', time.time(), top[0] if top else '')
 
 
 def claude_installed_copy() -> bool:
@@ -258,8 +259,8 @@ def brand_cfg() -> dict:
     return {**BRAND_DEFAULTS, **(c['brand'] if 'brand' in c else {})}
 
 
-def plain(shield: list, zephyr: str) -> list:
-    rows = list(shield)
+def plain(shield: list, zephyr: str, ship: str = '') -> list:
+    rows = ([ship] if ship else []) + list(shield)
     if zephyr:
         if rows:
             rows[-1] = f"{rows[-1]}  {zephyr}"
@@ -268,10 +269,10 @@ def plain(shield: list, zephyr: str) -> list:
     return rows
 
 
-def layout(shield: list, zephyr: str, now: float) -> list:
+def layout(shield: list, zephyr: str, now: float, ship: str = '') -> list:
     b = brand_cfg()
     if b['enabled'] is not True:
-        return plain(shield, zephyr)
+        return plain(shield, zephyr, ship)
     bg, alpha, mode = None, b['rest_alpha'], b['mode']
     if b['bg'] == 'auto':
         try:
@@ -289,6 +290,8 @@ def layout(shield: list, zephyr: str, now: float) -> list:
     k = (len(rows) - 1) // 2                                       # mid 3 rows → 1 · compact 1 → 0
     lines = list(rows)
     lines[k] = '  '.join([lines[k]] + list(shield) + [word])
+    if ship:
+        lines[0] = f"{lines[0]}  {ship}" if len(lines) > 1 else f"{ship}  {lines[0]}"   # compact (1 row): Dropship leads
     if zephyr:
         lines[-1] = f"{lines[-1]}  {zephyr}"
     return lines
