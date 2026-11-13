@@ -27,6 +27,8 @@ Linux; nothing is blended then, so no colour is guessed) is drawn at the left; t
 and the wings + HYPERNYM.ai wordmark; hypernym's Zephyr line rides the LAST row. Brand settings come from nebula's
 settings when present (~/.nebula/config.json → brand), else BRAND_DEFAULTS (= nebula's shipped defaults).
 A part that fails shows "✖ <plugin>: <reason>" — never a blank line.
+DROPSHIP (v14): when hypernym is installed and its scripts carry dropship.py, Dropship's row (Neptune + who is here on
+the home network / distant relays + the latest message) rides ABOVE the logo rows. Empty when Dropship is off.
 NO .get(). Imports at top.
 """
 import json
@@ -42,7 +44,7 @@ from pathlib import Path
 from brand import icon, logo, wings_icon
 from termbg import background
 
-VERSION = 13                                   # a newer copy is never overwritten by an older one (refresh)
+VERSION = 14                                   # a newer copy is never overwritten by an older one (refresh)
 MARKETPLACE = 'hypernym-nebula'                # the shield's home (public)
 MARKETPLACES = ('hypernym-nebula', 'hypernym-nebula-pro')    # either plugin is found under either name
 HOME = {'nebula': 'hypernym-nebula', 'hypernym': 'hypernym-nebula-pro'}   # where each one is installed FROM
@@ -175,6 +177,14 @@ def compose(event: str) -> list:
         p.stdin.write(event)                      # small (a few KB): fits the pipe, so both parts start at once
         p.stdin.close()
         procs[name] = p
+    ship = None
+    for name, root in active:
+        script = root / 'skills' / 'hypernym' / 'scripts' / 'dropship.py'
+        if name == 'hypernym' and script.exists():
+            ship = subprocess.Popen([sys.executable, str(script), 'row'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
+            ship.stdin.write(event)
+            ship.stdin.close()
     deadline = time.monotonic() + TIMEOUT_S
     for name, p in procs.items():
         try:
@@ -188,8 +198,17 @@ def compose(event: str) -> list:
         except subprocess.TimeoutExpired:
             os.killpg(p.pid, signal.SIGTERM)       # the whole part (uv → python), so a hang never piles up
             out[name] = [f"✖ {name}: no answer within {TIMEOUT_S:.0f} s"]
-    return layout(out['nebula'] if 'nebula' in out else [],
-                  '  '.join(out['hypernym']) if 'hypernym' in out else '', time.time())
+    top = []
+    if ship is not None:
+        try:
+            if ship.wait(timeout=max(0.05, deadline - time.monotonic())) == 0:
+                top = [ln for ln in ship.stdout.read().splitlines() if ln.strip()][:1]
+            else:
+                top = [f"✖ dropship: {last_words(ship.stderr.read())}"]
+        except subprocess.TimeoutExpired:
+            os.killpg(ship.pid, signal.SIGTERM)
+    return top + layout(out['nebula'] if 'nebula' in out else [],
+                        '  '.join(out['hypernym']) if 'hypernym' in out else '', time.time())
 
 
 def claude_installed_copy() -> bool:

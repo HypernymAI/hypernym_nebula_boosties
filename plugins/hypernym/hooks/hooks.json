@@ -1,5 +1,5 @@
 {
-  "description": "hypernym: keep the status line launcher current; tell each new, resumed, cleared or compacted session about this repo's analysis; remember which package a session loaded (local only, never the network); in Codex, show the Zephyr status row in the conversation.",
+  "description": "hypernym: keep the status line launcher current; tell each new, resumed, cleared or compacted session about this repo's analysis; remember which package a session loaded (local only, never the network); in Codex, show the Zephyr status row in the conversation. Dropship: start the local courier on session start (it only talks on home networks); \"#name text\" prompts go to that agent; new Dropship messages are shown to Claude as data.",
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "timeout": 10,
@@ -9,7 +9,13 @@
                      "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_context.py\"" } ] },
       { "matcher": "startup|resume|clear",
         "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/codex_status.py\"" } ] }
+                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/codex_status.py\"" } ] },
+      { "hooks": [ { "type": "command", "timeout": 10,
+                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" ensure" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "timeout": 10,
+                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" hook-prompt" } ] }
     ],
     "PostToolUse": [
       { "matcher": "Bash|mcp__.*hypernym_load",
