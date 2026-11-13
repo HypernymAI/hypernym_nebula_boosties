@@ -648,14 +648,14 @@ def running() -> bool:
         return False
 
 
-def _spawn(argv: list) -> None:
+def _spawn(argv: list, env=None) -> None:
     _private_dir()
     with open(LOG, 'a') as lf:
         if IS_WIN:
-            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf, close_fds=True,
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf, close_fds=True, env=env,
                              creationflags=DETACHED | NO_WINDOW)
         else:
-            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf, close_fds=True,
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf, close_fds=True, env=env,
                              start_new_session=True)
 
 
@@ -1074,14 +1074,27 @@ def status_text() -> str:
 def main() -> int:
     a = sys.argv[1:]
     if a == ['daemon']:
-        if running():
+        # Claim the pid file FIRST (the status line asks "running?" every second while the environment builds),
+        # then confirm the claim held; the crypto-environment daemon we hand over to is told our pid (its parent).
+        parent = os.environ['DROPSHIP_PARENT'] if 'DROPSHIP_PARENT' in os.environ else ''
+        try:
+            holder = PIDFILE.read_text().strip()
+        except OSError:
+            holder = ''
+        if holder and holder != parent and running():
             return 0
-        if Path(sys.prefix).resolve() != VENV.resolve():          # not yet in the crypto environment
+        _private_dir()
+        PIDFILE.write_text(str(os.getpid()))
+        time.sleep(0.3)
+        if PIDFILE.read_text().strip() != str(os.getpid()):
+            return 0                                            # another starter won the race
+        if Path(sys.prefix).resolve() != VENV.resolve():        # not yet in the crypto environment
             why = '' if venv_ready() else build_venv()
             if why:
                 log(why)
-            elif venv_ready():
-                _spawn([str(venv_python()), str(Path(__file__).resolve()), 'daemon'])
+            if venv_ready():
+                _spawn([str(venv_python()), str(Path(__file__).resolve()), 'daemon'],
+                       dict(os.environ, DROPSHIP_PARENT=str(os.getpid())))
                 return 0
         Courier().run()
         return 0
