@@ -120,13 +120,13 @@ class Mail:
             return out
 
     # -- sending
-    def send(self, friend: dict, body: str, kind: str = 'msg') -> None:
+    def send(self, friend: dict, body: str, kind: str = 'msg', to_s: str = '', from_s: str = '') -> None:
         box, topic = self.box(friend), self.topic(friend, True)
         mid = secrets.token_hex(8)
         chunks = [body[i:i + CHUNK] for i in range(0, len(body), CHUNK)] or ['']
         for i, part in enumerate(chunks):
             env = {'k': kind, 'mid': mid, 'from': self.c.me['id'], 'to': friend['id'], 'ts': time.time(),
-                   'i': i, 'n': len(chunks), 'body': part}
+                   'i': i, 'n': len(chunks), 'body': part, 'to_s': to_s, 'from_s': from_s}
             self.post(topic, 'dsp1.' + b64(box.encrypt(json.dumps(env).encode())))
 
     def pinger(self):
@@ -134,7 +134,7 @@ class Mail:
             for f in self.mail_friends():
                 if not self.c.on_lan(f['id']):
                     try:
-                        self.send(f, '', 'ping')
+                        self.send(f, json.dumps({'sessions': self.c.sessions_now()}), 'ping')
                     except (OSError, ValueError) as e:
                         self.error = f'mailbox: {e}'[:120]
             self.c.stop.wait(PING_S)
@@ -180,6 +180,11 @@ class Mail:
             return                                                # not from this friend, tampered, or garbage
         self.last_seen[friend['id']] = time.time()
         if kind == 'ping':
+            try:
+                names = json.loads(env['body'])['sessions'] if env['body'] else []
+                self.c.peer_sessions[friend['id']] = [str(x)[:32] for x in names[:20]]
+            except (ValueError, KeyError, TypeError):
+                pass
             return
         key = (mid, i)
         now = time.time()
@@ -191,7 +196,8 @@ class Mail:
         got[i] = str(env['body'])
         if len(got) == n:
             del self.parts[mid]
-            self.c.deliver(friend['name'], ''.join(got[k] for k in range(n)), 'mailbox', float(env['ts']))
+            self.c.deliver(friend['name'], ''.join(got[k] for k in range(n)), 'mailbox', float(env['ts']),
+                           str(env['to_s']) if 'to_s' in env else '', str(env['from_s']) if 'from_s' in env else '')
 
     # -- pairing
     def pair(self, code: str, done, wanted=lambda: True) -> None:

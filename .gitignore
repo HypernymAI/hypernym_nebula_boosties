@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# dropship test runs (homes, crypto venv, logs)
+tests/dropship/.run/
