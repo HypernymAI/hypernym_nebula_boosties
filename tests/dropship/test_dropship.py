@@ -48,7 +48,7 @@ me = d.identity(); me['name'] = {name!r}; d.save(d.IDENTITY, me)""")
 
     def cli(self, *args, stdin: str = '', extra_env=None) -> str:
         r = subprocess.run([sys.executable, str(DROPSHIP), *args], input=stdin, capture_output=True, text=True,
-                           env=dict(self.env, **(extra_env or {})), timeout=150)
+                           env=dict(self.env, **(extra_env or {})), timeout=210 if args[:1] == ('tracer',) else 150)
         if r.returncode != 0:
             raise AssertionError(f'{self.name}: dropship {" ".join(args)} failed:\n{r.stderr}')
         return r.stdout.strip()
@@ -380,6 +380,23 @@ def test_network_pairing_and_mail(a, b, c, d):
 
 
 # ------------------------------------------------------------------------------------------------------------ runner
+def test_network_tracer(a, b, c, d):
+    origin = a.session('tracer-origin', 'Codex Origin')
+    receiver = c.session('tracer-receiver', 'Claude Receiver')
+    invitation = a.cli('tracer', extra_env={'DROPSHIP_SESSION': origin.sid})
+    token = invitation.split('hypernym dropship add ')[1].splitlines()[0]
+    result = c.cli('tracer', token, extra_env={'DROPSHIP_SESSION': receiver.sid})
+    if 'round trip confirmed' not in result:
+        time.sleep(5)
+        result = c.cli('tracer', token, extra_env={'DROPSHIP_SESSION': receiver.sid})
+    check('round trip confirmed' in result, result)
+    # Exercise an ordinary message after pairing; carol has no home LAN.
+    result = receiver.send('#alice/codex-origin tracer mailbox message')
+    check('sent' in result, result)
+    wait(lambda: any(m['body'] == 'tracer mailbox message' for m in a.inbox()), 30, 'mailbox message arrives')
+    check('tracer mailbox message' in origin.got(), 'invited session reads the message')
+
+
 def main() -> int:
     network = '--network' in sys.argv
     only = sys.argv[sys.argv.index('-k') + 1] if '-k' in sys.argv else ''

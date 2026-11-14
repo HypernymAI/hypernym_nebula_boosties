@@ -1,9 +1,54 @@
 ---
 name: hypernym
-description: Hypernym repo analysis for the git repo you are working in — check floats and repo-analyze jobs, submit a repo analyze, download the finished package, report how far it has drifted from the current code, and load it into the session. Use when the user says "hypernym status", "hypernym go", "hypernym analyze", "hypernym do it" or "yes" to a Hypernym offer (start an analysis of this repo now), "hypernym help" or "hypernym login" (sign in to Hypernym/Zephyr — use this skill's login, never a hand-written curl), asks about floats, float status, repo analyze, a Hypernym package or treatment prompt, or wants Hypernym context for this repo loaded.
+description: Update the installed Hypernym plugin when the user says "hypernym update"; otherwise manage Hypernym repo analysis, floats, jobs, packages, status and login. Use for "hypernym status", "hypernym go", "hypernym analyze", "hypernym help", "hypernym login", or requests to load this repo's Hypernym context.
 ---
 
 # Hypernym
+
+## "hypernym update" — update the installed plugin
+
+Treat this as an instruction to safely update Hypernym in the CURRENT client. Start the update workflow;
+do not ask what "update" means. This is independent of the working project's Git remote. Do not call repo-analysis
+help, sync, load, or analyze as a substitute, and do not add an origin to the user's project.
+
+1. Identify the current client and Hypernym installation from its plugin registry/configuration and installed
+   manifest. Record the installed version, marketplace source, and install scope. The usual identity is
+   `hypernym@hypernym-nebula-pro`. Preserve an existing different configured source instead of silently replacing it.
+   Check the installed client's `plugin --help` and relevant subcommand help if its commands differ from below.
+2. Preserve user configuration, credentials, Dropship identity/friends/messages, and locally modified plugin files.
+   If known local patches exist, retain a recoverable copy and report any conflict before replacing them. A local
+   development marketplace must retain its uncommitted work; never reset, clean, or force-pull it to perform an update.
+3. Use the current client's supported plugin manager. For the usual Git marketplace, execute these sequentially:
+
+   **Codex:**
+   ```sh
+   codex plugin marketplace upgrade hypernym-nebula-pro --json
+   codex plugin add hypernym@hypernym-nebula-pro --json
+   codex plugin list --marketplace hypernym-nebula-pro --json
+   ```
+
+   **Claude Code:**
+   ```sh
+   claude plugin marketplace update hypernym-nebula-pro
+   claude plugin update hypernym@hypernym-nebula-pro
+   claude plugin list
+   ```
+
+   Use the verified installation scope when the client requires it. Update Hypernym only unless the user also
+   requested Nebula or other plugins. Use existing GitHub authentication for the private marketplace; never print
+   tokens. Request normal sandbox/network escalation if required. Do not bypass a client's trust prompt, approve
+   newly introduced install commands on the user's behalf, or edit stored trust hashes.
+4. Verify the manager's result and the installed manifest version/path. A refreshed marketplace alone does not
+   establish that the installed plugin changed. Report `updated: old → new`, `already current: version`, or the
+   concrete failure. Distinguish the installed version from tools already loaded into the running session.
+5. If the new tools/hooks require a client reconnect or restart, say so once with the applicable resume instruction.
+   Do not terminate the user's running session. After reconnect, check `dropship_status` when Dropship is in use;
+   the updated startup hook handles upgrading its courier.
+
+If this client exposes updates only through its plugin UI, give the exact verified UI action and state that this
+last step requires the user. Do not invent `hypernym_update` or an unsupported `codex plugin update` command, overwrite
+the cache by hand, or uninstall/reinstall as a routine workaround. An unpublished development version cannot be
+downloaded from GitHub; report that fact without publishing or downgrading it automatically.
 
 ## In Codex: use the MCP tools
 
@@ -15,7 +60,8 @@ outside the sandbox and give the same output:
 `hypernym_login_status` · packages / load / sync / wait / cancel / floats / accounts / GitHub → the tool of that name.
 Show each tool's output as-is. Everything below applies the same way through the tools.
 
-All actions go through one script in this skill's `scripts/` folder. Run it from the repo, with the
+Analysis/account actions go through one script in this skill's `scripts/` folder. Plugin updates use the client
+manager above. Run the analysis script from the repo, with the
 absolute path to this skill's directory:
 
 ```bash
@@ -52,7 +98,7 @@ dialog is the user's only decision. After a compaction the note appears only if 
 session: load it again right away with the command it gives. The hook never calls the network.
 `HYPERNYM_SESSION_CONTEXT=0` turns the note off.
 
-## "hypernym help" — always start here
+## "hypernym help" — repo analysis overview
 
 ```bash
 python3 <skill dir>/scripts/hypernym.py --dir "$PWD" help

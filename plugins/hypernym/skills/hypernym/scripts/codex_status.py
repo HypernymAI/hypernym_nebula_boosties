@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CODEX ONLY — the Zephyr status row, shown inside the Codex conversation (2026-10-19).
+CODEX ONLY — Zephyr and Dropship snapshots inside the Codex conversation.
 
-Codex has no status line a plugin can draw, so the row Claude Code's status line shows (statusline.py — the same words,
+This integration uses hook systemMessage output. The row Claude Code's status line shows (statusline.py — the same words,
 colours and states: analyzing 15/37 files 41%, analysis complete — 38 files, top up to keep going, analysis continues
 when Zephyr returns …) is shown the way nebula's score line is: as the hook's systemMessage, which Codex prints in the
 conversation as `↳ Hook · <row>`.
@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+import dropship
 SHOWN = Path.home() / '.hypernym' / 'codex_status'
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 MOTION = '⠈⠐⠠⢀⡀⠄⠂⠁⟳'                    # statusline's patience clock and its stale mark: motion, not a change
@@ -47,11 +48,24 @@ def main() -> None:
     event = json.loads(sys.stdin.read())
     if 'PLUGIN_ROOT' not in os.environ:
         return
-    line = row({'session_id': event['session_id'], 'cwd': event['cwd']})
+    lines = []
+    try:
+        line = row({'session_id': event['session_id'], 'cwd': event['cwd']})
+        if not any(q in change_key(line) for q in QUIET):
+            lines.append(line)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        pass
+    rec = dropship.session_record(event['session_id'])
+    transcript = event['transcript_path'] if 'transcript_path' in event else rec['transcript']
+    rec = dropship.register(event['session_id'], transcript, event['cwd'])
+    lines.append('Dropship · ' + dropship.addr(dropship.identity()['name'], rec['name']))
+    lines.append(dropship.status_text())
+    unread = sum(1 for m in dropship.inbox() if m['dir'] == 'in'
+                 and 'owner' in m and m['owner'] == event['session_id']
+                 and rec['n'] is not None and m['n'] > rec['n'])
+    lines.append(f'Unread for this session: {unread}')
+    line = '\n'.join(lines)
     key = change_key(line)
-    for q in QUIET:
-        if q in key:
-            return
     SHOWN.mkdir(parents=True, exist_ok=True)
     memo = SHOWN / f"{event['session_id']}.txt"
     if event['hook_event_name'] == 'Stop':

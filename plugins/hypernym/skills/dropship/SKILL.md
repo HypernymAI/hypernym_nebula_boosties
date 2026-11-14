@@ -5,7 +5,10 @@ description: Dropship, Neptune's courier. Nebula Pro agents and sessions message
 
 # Dropship
 
-Dropship lets this session talk to other Claude Code sessions with no setup. They can be on this computer, on the
+Use this skill also for `hypernym dropship tracer`, accepting `hypernym dropship add <dsp1-...>`,
+or adding a family member or another computer to Dropship.
+
+Dropship lets Codex and Claude Code sessions exchange messages. They can be on this computer, on the
 home Wi-Fi, or anywhere after a one-time pairing. There are no tokens, URLs or accounts.
 
 - **Addresses.** Every session is `#machine/session`. The session part is its `/rename` name, so TransportSession
@@ -20,6 +23,35 @@ home Wi-Fi, or anywhere after a one-time pairing. There are no tokens, URLs or a
 - **The status bar** shows Neptune (the speed-blimp with googly eyes) and each friend as a coloured `#name`.
 
 ## The workflow (same as a relay: send, wait, read)
+
+## Codex terminal status and setup handoff
+
+"hypernym dropship tracer" calls `dropship_tracer` without a tracer. "hypernym dropship add <dsp1-...>"
+calls the same tool with `tracer` set to the pasted token. Supply `as_session` with this session's verified name
+when known. Creating a tracer advertises this session and starts a ten-minute pairing invitation. Accepting one
+reuses an existing friendship or pairs, then checks the encrypted mailbox route to the specific invited inbox.
+Show the returned command verbatim. A receipt confirms the courier's session route, not that an AI answered.
+If identity is ambiguous, resolve the current session; never choose whichever session used the folder last.
+Both computers need the tracer-capable plugin and a restarted courier. Newly added MCP tools require reloading
+the plugin/client. If the tool is absent but the updated script is installed, use `dropship.py tracer [token]`
+with `DROPSHIP_SESSION` set to this session's exact ID. Never claim an older plugin supports tracer.
+
+Use `dropship_status` for "dropship status". Report the actual advertised addresses; do not infer a session's
+address from its folder or assume that every listed local session belongs to this conversation.
+Codex names are read from its session index at registration; a rename takes effect on the next registration hook.
+Tracer invitations use a stable session alias (display name plus an ID suffix), also shown by status, so renames
+do not redirect an invitation. Share the returned alias when you need that exact session.
+Codex startup and end-of-turn hooks show Dropship status in the conversation, suppressing unchanged end-of-turn
+output. This is a snapshot, not a continuous footer. Receiving a message does not by itself guarantee that an idle
+Codex task wakes. Use `dropship_wait` when the user requests waiting, and `dropship_read` for unread messages.
+Claude's terminal wake/resume commands and Bash background-listener instructions are not Codex instructions.
+
+When the user wants instructions to give someone else, first check status and provide a copyable agent prompt:
+`Send a Dropship message to #machine/session saying: hello from my side.` Replace the address with this session's
+verified advertised address. Explain that this is typed into their agent, not a shell command. On the same trusted
+home network, each side can use `hypernym discover` if discovery has not been enabled. For a new distant friend,
+use `hypernym pair`, then give the actual returned code for the other side's `hypernym pair <code>` prompt.
+Distinguish peer discovery, mailbox readiness, message delivery, and an actual reply; status alone proves no exchange.
 
 1. **Send.** When your user asks you to message someone ("send transport a message saying what's up"), call
    `dropship_send` with `to` (for example `#chris/transportsession`) and `body`. Pass `as_session` set to your own

@@ -313,6 +313,28 @@ def session_record(sid: str) -> dict:
     return base
 
 
+def codex_title(sid: str, transcript: str) -> str:
+    """Read the latest rename from Codex's append-only session index."""
+    root = Path(os.environ['CODEX_HOME']) if 'CODEX_HOME' in os.environ else Path.home() / '.codex'
+    try:
+        Path(transcript).resolve().relative_to((root / 'sessions').resolve())
+    except ValueError:
+        return ''
+    title = ''
+    try:
+        with (root / 'session_index.jsonl').open() as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    if entry['id'] == sid and isinstance(entry['thread_name'], str):
+                        title = clean(entry['thread_name'], 80)
+                except (ValueError, KeyError, TypeError):
+                    continue
+    except OSError:
+        pass
+    return title
+
+
 def register(sid: str, transcript: str, cwd: str) -> dict:
     """Refresh this session's record: its /rename name (read incrementally from the transcript), cwd, last use."""
     r = session_record(sid)
@@ -332,6 +354,9 @@ def register(sid: str, transcript: str, cwd: str) -> dict:
             r['scan'] = f.tell()
     except OSError:
         pass
+    title = codex_title(sid, r['transcript'])
+    if title:
+        r['title'] = title
     r['name'], r['cwd'], r['seen'] = slug(r['title'], sid), cwd or r['cwd'], time.time()
     term = terminal_of_session()
     if term['tty']:
@@ -424,7 +449,8 @@ def owner_of(name_or_empty: str, peer: str) -> str:
     with `peer`, else '' (held)."""
     ss = reachable()
     if name_or_empty:
-        named = [(r['seen'], sid) for sid, r in ss.items() if r['name'] == name_or_empty]
+        named = [(r['seen'], sid) for sid, r in ss.items()
+                 if r['name'] == name_or_empty or name_or_empty in r.get('aliases', [])]
         return max(named)[1] if named else ''
     best, last = '', 0.0
     for t in talks():
@@ -467,6 +493,11 @@ def advertised_sessions() -> list:
         if n not in seen:
             seen.add(n)
             out.append(n)
+    for r in reachable().values():
+        for alias in r.get('aliases', []):
+            if alias not in seen:
+                seen.add(alias)
+                out.append(alias)
     return out[:20]
 
 
@@ -504,6 +535,9 @@ class Courier:
         body = clean(body)
         to_s = to_s if SESSION_RE.match(to_s or '-') else ''
         from_s = from_s if SESSION_RE.match(from_s or '-') else ''
+        from dropship_tracer import receive
+        if receive(self, name, body, to_s, from_s):
+            return
         if body:
             owner = owner_of(to_s, name)
             append_inbox({'dir': 'in', 'via': via, 'from': name, 'from_s': from_s, 'to': self.me['name'], 'to_s': to_s,
@@ -763,7 +797,7 @@ class Courier:
             with self.lock:
                 self.peers = {k: v for k, v in self.peers.items() if now - v['last_seen'] < 600}
                 s = {'pid': os.getpid(), 'at': now, 'me': {'id': self.me['id'], 'name': self.me['name']},
-                     'home': self.home, 'net': self.net, 'enabled': self.cfg['enabled'],
+                     'home': self.home, 'net': self.net, 'enabled': self.cfg['enabled'], 'tracer_version': 1,
                      'peers': [{k: v[k] for k in ('name', 'ip', 'port', 'last_seen', 'kind')} | {'id': pid}
                                for pid, v in self.peers.items()],
                      'relays': self.relays, 'warnings': self.warnings[-3:],
@@ -1020,6 +1054,8 @@ def send(to: str, body: str, sid: str = '') -> str:
                 _relay_post(t['relay'], '/api/messages', {'body': body, 'to': name})
             elif t['kind'] == 'mail':
                 r = send_mail(name, body, to_s, from_s, sid)
+                if r.startswith('queued'):
+                    return f'#{name}/{to_s}: {r}; delivery not confirmed'
                 if r != 'ok' and not r.startswith('queued'):
                     raise ValueError(r)
                 sent.append(name + (f'/{to_s}' if to_s else ''))
@@ -1083,7 +1119,8 @@ def sessions_text() -> str:
         if now - r['seen'] > 14 * 86400:
             continue
         alive = bool(r['pid']) and pid_alive(r['pid'])
-        st = transcript_state(r['transcript']) if alive else 'closed'
+        codex = '/.codex/sessions/' in r['transcript'] or '/rollout-' in r['transcript']
+        st = transcript_state(r['transcript']) if alive else '' if codex else 'closed'
         mark = {'waiting': '● WAITING FOR YOU', 'working': '◐ working', 'closed': '○ closed', '': '· open'}[st]
         reach_txt = ('default' if sid in reach and 'default' in reach[sid] else 'added' if sid in reach else 'not reachable')
         if r['borg']:
@@ -1093,7 +1130,8 @@ def sessions_text() -> str:
             if sid in peers else ''
         out.append(f"{time.strftime('%m-%d %H:%M', time.localtime(r['seen']))}  {mark:18}  #{me}/{r['name']}"
                    f"  [{reach_txt}]  {sid}\n      {where}" + (f'\n      talked with {talked}' if talked else '')
-                   + (f"\n      hypernym dropship awake {r['name']}" if alive else f"\n      claude --resume {sid}"))
+                   + (f"\n      codex resume {sid} (activity unknown)" if codex else
+                      f"\n      hypernym dropship awake {r['name']}" if alive else f"\n      claude --resume {sid}"))
     return '\n'.join(out) if out else 'No sessions seen yet.'
 
 
@@ -1107,6 +1145,8 @@ def awake(target: str, dry_run: bool = False) -> str:
         return f'Dropship: no session called {target}. Say "hypernym dropship sessions" to list them.'
     sid = max(hits)[1]
     r = ss[sid]
+    if '/.codex/sessions/' in r['transcript'] or '/rollout-' in r['transcript']:
+        return f"Dropship: open this Codex task with: codex resume {sid} (in {r['cwd'] or '.'})"
     if sys.platform != 'darwin':
         return f"Dropship: awake works on macOS. Resume it with: cd {r['cwd'] or '.'} && claude --resume {sid}"
     alive = bool(r['pid']) and pid_alive(r['pid'])
@@ -1181,7 +1221,8 @@ def talks_text() -> str:
         peers = ', '.join('#' + p for p, _t in sorted(b['peers'].items(), key=lambda kv: kv[1], reverse=True))
         out.append(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(b['last']))}  {sid}  #{me}/{r['name']}"
                    f"{' (' + r['title'] + ')' if r['title'] and r['title'] != r['name'] else ''}  ↔ {peers}\n"
-                   f"    claude --resume {sid}" + (f"   (in {r['cwd']})" if r['cwd'] else ''))
+                   + (f"    codex resume {sid}" if '/rollout-' in r.get('transcript', '') else
+                      f"    claude --resume {sid}") + (f"   (in {r['cwd']})" if r['cwd'] else ''))
     return '\n'.join(out)
 
 
@@ -1457,6 +1498,8 @@ def hook_prompt(raw: str) -> str:
     def through(ctx: str) -> str:                       # let the prompt reach Claude, with Dropship's note
         return json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': ctx}})
     cmd = CMD_RE.match(prompt.strip())
+    if cmd and cmd.group(1).lower() == 'add' and cmd.group(2).strip().startswith('dsp1-'):
+        return through('Use dropship_tracer with the pasted invitation and this session name: ' + rec['name'])
     if cmd and cmd.group(1).lower() == 'borg':
         if (cmd.group(2) or '').strip().lower() == 'off':
             r = set_borg(sid, False)
@@ -1486,6 +1529,22 @@ def session_for_cwd(cwd: str) -> str:
     """The session most recently prompted in this folder (the MCP server runs in its session's folder)."""
     best = max(((r['seen'], sid) for sid, r in all_sessions().items() if r['cwd'] == cwd), default=(0, ''))
     return best[1]
+
+
+def calling_session() -> str:
+    """Bind MCP operations to one session; never guess between tasks in the same folder."""
+    ss = all_sessions()
+    sid = os.environ.get('DROPSHIP_SESSION') or os.environ.get('CODEX_THREAD_ID', '')
+    name = os.environ.get('DROPSHIP_AS', '')
+    if sid:
+        if sid not in ss or (name and ss[sid]['name'] != name):
+            sys.exit('Dropship: current session identity is missing or mismatched; refresh registration first.')
+        return sid
+    hits = [k for k, r in ss.items() if r['name'] == name] if name else [
+        k for k, r in ss.items() if r['cwd'] == os.getcwd()]
+    if len(hits) != 1:
+        sys.exit('Dropship: session is ambiguous or missing; supply as_session from Dropship status.')
+    return hits[0]
 
 
 # ---------------------------------------------------------------------------------------------------- CLI
@@ -1565,6 +1624,8 @@ def status_text() -> str:
         lines.append('Mailbox (friends anywhere, end-to-end encrypted): '
                      + ('ready' if s['mail']['ok'] else f"not ready — {s['mail']['why'] or 'starting'}")
                      + f" via {cfg['mailbox']}")
+    lines.append('Tracer: ' + ('ready' if s.get('tracer_version') == 1 else
+                              'courier restart required for tracer support'))
     if 'pairing' in s and s['pairing'] is not None and s['pairing']['status'] in ('new', 'waiting'):
         lines.append(f"Pairing in progress: {s['pairing']['code']}")
     lines += [f'Warning: {w}' for w in s['warnings']]
@@ -1573,6 +1634,15 @@ def status_text() -> str:
 
 def main() -> int:
     a = sys.argv[1:]
+    if a[:1] == ['tracer'] or (a[:1] == ['add'] and len(a) == 2 and a[1].startswith('dsp1-')):
+        import dropship_tracer
+        try:
+            name = os.environ.get('DROPSHIP_AS', '')
+            print(dropship_tracer.connect(a[1], name) if len(a) == 2 else dropship_tracer.create(name))
+            return 0
+        except (ValueError, OSError) as e:
+            print(f'Dropship: {e}')
+            return 1
     if a == ['daemon']:
         # Claim the pid file FIRST (the status line asks "running?" every second while the environment builds),
         # then confirm the claim held; the crypto-environment daemon we hand over to is told our pid (its parent).
@@ -1605,6 +1675,8 @@ def main() -> int:
                      ev['cwd'] if 'cwd' in ev else '')
         except (ValueError, KeyError, TypeError):
             pass
+        if running() and state().get('tracer_version') != 1:
+            stop_daemon()
         start_daemon()
         return 0
     if a == ['sessions']:
@@ -1649,11 +1721,7 @@ def main() -> int:
         print(json.dumps({n: where(v) for n, v in directory().items()}))
         return 0
     if a in (['read'], ['read', '--all']) or (a[:1] == ['wait'] and len(a) <= 2):
-        sid = os.environ['DROPSHIP_SESSION'] if 'DROPSHIP_SESSION' in os.environ else ''
-        if not sid and 'DROPSHIP_AS' in os.environ:
-            named = [(r['seen'], k) for k, r in all_sessions().items() if r['name'] == os.environ['DROPSHIP_AS']]
-            sid = max(named)[1] if named else ''
-        sid = sid or session_for_cwd(os.getcwd())
+        sid = calling_session() if a != ['read', '--all'] else ''
         rec = session_record(sid) if sid else {'name': ''}
         me = addr(identity()['name'], rec['name']) if sid else ''
         if a[0] == 'wait':
@@ -1674,11 +1742,7 @@ def main() -> int:
         print(pair(a[1] if len(a) == 2 else ''))
         return 0
     if len(a) >= 3 and a[0] == 'send':
-        sid = os.environ['DROPSHIP_SESSION'] if 'DROPSHIP_SESSION' in os.environ else ''
-        if not sid and 'DROPSHIP_AS' in os.environ:            # a session NAME (what Claude knows) → its id
-            named = [(r['seen'], k) for k, r in all_sessions().items() if r['name'] == os.environ['DROPSHIP_AS']]
-            sid = max(named)[1] if named else ''
-        sid = sid or session_for_cwd(os.getcwd())
+        sid = calling_session()
         result = send(a[1], ' '.join(a[2:]), sid)
         print(result + ('. Call dropship_wait to wait for the answer.' if result.startswith('sent') else ''))
         return 0
