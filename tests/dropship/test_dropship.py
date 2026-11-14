@@ -397,6 +397,28 @@ def test_network_tracer(a, b, c, d):
     check('tracer mailbox message' in origin.got(), 'invited session reads the message')
 
 
+def test_local_control_rename_and_nickname(a, b, c, d):
+    origin = a.session('control-origin', 'Control Origin')
+    dest = b.session('control-dest', 'Control Dest')
+    dest.send('hypernym dropship add')
+    bid = b.py("print(d.identity()['id'])")
+    before = b.py("print(d.identity()['pub'])")
+    try:
+        b.cli('name', 'bob-renamed')
+        wait(lambda: 'bob-renamed' in a.cli('peers'), 20, 'LAN rename propagates')
+        a.cli('nickname', bid, 'brother')
+        wait(lambda: json.loads(a.cli('peers')).get('brother') == 'home wi-fi', 20, 'nickname LAN route rediscovered')
+        result = origin.send('#brother/control-dest rename-safe-message')
+        check('sent' in result, result)
+        wait(lambda: any(m['body'] == 'rename-safe-message' for m in b.inbox()), 10, 'nicknamed LAN delivery')
+        check('rename-safe-message' in dest.got(), 'correct session receives renamed peer message')
+        check(before == b.py("print(d.identity()['pub'])"), 'rename preserved key')
+        check(bid == b.py("print(d.identity()['id'])"), 'rename preserved identity')
+    finally:
+        a.cli('clear-nickname', bid)
+        b.cli('name', 'bob')
+
+
 def main() -> int:
     network = '--network' in sys.argv
     only = sys.argv[sys.argv.index('-k') + 1] if '-k' in sys.argv else ''

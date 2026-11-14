@@ -134,7 +134,7 @@ class Mail:
             for f in self.mail_friends():
                 if not self.c.on_lan(f['id']):
                     try:
-                        self.send(f, json.dumps({'sessions': self.c.sessions_now()}), 'ping')
+                        self.send(f, json.dumps({'sessions': self.c.sessions_now(), 'name': self.c.me['name']}), 'ping')
                     except (OSError, ValueError) as e:
                         self.error = f'mailbox: {e}'[:120]
             self.c.stop.wait(PING_S)
@@ -181,7 +181,9 @@ class Mail:
         self.last_seen[friend['id']] = time.time()
         if kind == 'ping':
             try:
-                names = json.loads(env['body'])['sessions'] if env['body'] else []
+                presence = json.loads(env['body']) if env['body'] else {}
+                self.c.peer_renamed(friend['id'], presence.get('name'))
+                names = presence.get('sessions', [])
                 self.c.peer_sessions[friend['id']] = [str(x)[:32] for x in names[:20]]
             except (ValueError, KeyError, TypeError):
                 pass
@@ -196,7 +198,7 @@ class Mail:
         got[i] = str(env['body'])
         if len(got) == n:
             del self.parts[mid]
-            self.c.deliver(friend['name'], ''.join(got[k] for k in range(n)), 'mailbox', float(env['ts']),
+            self.c.deliver(self.c.friends[friend['id']]['name'], ''.join(got[k] for k in range(n)), 'mailbox', float(env['ts']),
                            str(env['to_s']) if 'to_s' in env else '', str(env['from_s']) if 'from_s' in env else '')
 
     # -- pairing

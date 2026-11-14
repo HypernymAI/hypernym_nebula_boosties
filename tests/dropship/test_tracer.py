@@ -29,6 +29,7 @@ class TracerTests(unittest.TestCase):
             self.stack.enter_context(patch.object(d, key, self.home / filename))
         self.stack.enter_context(patch.dict(os.environ, {'DROPSHIP_SESSION': 'a', 'CODEX_HOME': str(self.home / 'codex')}))
         self.stack.enter_context(patch.object(d, 'running', return_value=True))
+        self.stack.enter_context(patch.object(t, 'ready'))
         self.stack.enter_context(patch.object(d, 'terminal_of_session', return_value={'pid': 0, 'tty': '', 'app': ''}))
         d.save(d.IDENTITY, {'id': 'machine-a', 'name': 'alice', 'priv': '2', 'pub': '4'})
         d.save(d.STATE, {'mail': {'ok': True}})
@@ -38,6 +39,7 @@ class TracerTests(unittest.TestCase):
 
     def test_expiry_and_malformed(self):
         value = t.decode(self.invite)
+        self.assertEqual(t.decode(self.invite[:5] + '\n  ' + self.invite[5:]), value)
         self.assertTrue(value['session'].startswith('a-'))
         with patch.object(t.time, 'time', return_value=value['expires'] + 1):
             with self.assertRaises(ValueError):
@@ -87,7 +89,8 @@ class TracerTests(unittest.TestCase):
         import base64
         token = t.PREFIX + base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip('=')
         d.save(d.FRIENDS, {'other-machine': {'name': 'bob', 'box': 'key'}})
-        def transport(name, body, to_s, from_s, sid):
+        def transport(name, body, to_s, from_s, sid, peer_id):
+            self.assertEqual(peer_id, 'other-machine')
             self.assertEqual((name, to_s, sid), ('bob', value['session'], 'a'))
             t.receive(None, 'bob', t.CONTROL + json.dumps({'kind': 'ack', 'nonce': value['nonce']}), from_s, to_s)
             return 'ok'

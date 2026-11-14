@@ -41,6 +41,8 @@ def current_session(name=''):
 
 
 def decode(token):
+    if isinstance(token, str):
+        token = ''.join(token.split())
     if not isinstance(token, str) or not token.startswith(PREFIX) or len(token) > 2048:
         raise ValueError('Invalid tracer; paste the dsp1- invitation exactly.')
     try:
@@ -60,7 +62,24 @@ def decode(token):
         raise ValueError('Invalid or expired tracer. Ask the other session for a new tracer.') from e
 
 
+def ready():
+    """Use the installed courier implementation before offering a working invitation."""
+    if not d.config()['enabled']:
+        raise ValueError('Dropship is off. Turn it on before using a tracer.')
+    if d.running() and d.state().get('local_control_version') != 1:
+        d.stop_daemon()
+    d.start_daemon()
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        state = d.state()
+        if d.running() and state.get('local_control_version') == 1 and state.get('mail', {}).get('ok'):
+            return
+        time.sleep(.25)
+    raise ValueError('Courier/mailbox not ready after startup. Run dropship status for the reason.')
+
+
 def create(name=''):
+    ready()
     sid, r = current_session(name)
     if not d.config()['enabled']:
         raise ValueError('Dropship is off. Turn it on before creating a tracer.')
@@ -86,6 +105,7 @@ def create(name=''):
 
 def connect(token, name=''):
     value = decode(token)
+    ready()
     sid, r = current_session(name)
     if value['id'] == d.identity()['id']:
         raise ValueError('This tracer belongs to this computer. Create it on the other computer.')
@@ -106,14 +126,15 @@ def connect(token, name=''):
     target = d.addr(friend['name'], value['session'])
     body = CONTROL + json.dumps({'kind': 'hello', 'nonce': value['nonce']})
     # Use the encrypted mailbox even on LAN: this checks the long-range path.
-    result = d.send_mail(friend['name'], body, value['session'], r['name'], sid)
+    result = d.send_mail(friend['name'], body, value['session'], r['name'], sid, value['id'])
     if result != 'ok':
         return f'{target}: {result}. Receipt is not confirmed; retry before the tracer expires.'
     receipt = d.HOME / ('tracer-receipt-' + value['nonce'] + '.json')
     deadline = time.time() + 60
     while time.time() < deadline:
         ack = d.load(receipt, {})
-        if ack.get('from') == friend['name'] and ack.get('owner') == sid:
+        if (ack.get('from_id') == value['id'] or ack.get('from') == friend['name']) and ack.get('owner') == sid:
+            target = d.addr(d.friend_names().get(value['id'], friend['name']), value['session'])
             return f'Connected to {target}. Encrypted mailbox round trip confirmed to the invited session inbox. Agent reply not yet checked.'
         time.sleep(.25)
     return f'Invitation sent to {target}; no session receipt yet. Retry before expiry. This does not prove an agent is awake.'
@@ -132,18 +153,20 @@ def receive(courier, name, body, to_s, from_s):
         if not owner:
             return True
         if msg['kind'] == 'ack':
-            d.save(d.HOME / ('tracer-receipt-' + nonce + '.json'), {'from': name, 'owner': owner, 'at': time.time()})
+            d.save(d.HOME / ('tracer-receipt-' + nonce + '.json'), {'from': name, 'from_id': d.peer_identity(name), 'owner': owner, 'at': time.time()})
         elif msg['kind'] == 'hello':
             invitation = d.load(d.HOME / 'tracer-invitation.json', {})
             if invitation.get('nonce') != nonce or invitation.get('sid') != owner or invitation.get('expires', 0) <= time.time():
                 return True
-            if invitation.get('claimed_by', name) != name:
+            peer_id = d.peer_identity(name)
+            if invitation.get('claimed_by_id', peer_id) != peer_id or ('claimed_by_id' not in invitation and invitation.get('claimed_by', name) != name):
                 return True
             invitation['claimed_by'] = name
+            invitation['claimed_by_id'] = peer_id
             d.save(d.HOME / 'tracer-invitation.json', invitation)
             d.OUTBOX.mkdir(exist_ok=True)
             d.save(d.OUTBOX / ('tracer-' + secrets.token_hex(8) + '.json'),
-                   {'to': name, 'body': CONTROL + json.dumps({'kind': 'ack', 'nonce': nonce}),
+                   {'to': name, 'to_id': '' if peer_id.startswith('name:') else peer_id, 'body': CONTROL + json.dumps({'kind': 'ack', 'nonce': nonce}),
                     'to_s': from_s, 'from_s': to_s, 'sid': owner})
         return True
     except (ValueError, KeyError, TypeError):

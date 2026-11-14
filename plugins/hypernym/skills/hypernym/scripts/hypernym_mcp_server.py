@@ -52,6 +52,12 @@ CALL = threading.local()
 
 DIR_PROP = {'type': 'string', 'description': 'Path of the git repo (default: the working directory).'}
 TOOLS = [
+    {'name': 'dropship_local',
+     'description': 'Show this computer identity, rename it without changing keys or friends, or set/remove a private nickname for a peer. Use for hypernym dropship name <name> or nickname <peer> <name>. Does not trust the current network.',
+     'inputSchema': {'type': 'object', 'required': ['action'], 'properties': {
+         'action': {'type': 'string', 'enum': ['identity', 'name', 'nickname', 'clear-nickname']},
+         'name': {'type': 'string', 'description': 'New machine name or local nickname.'},
+         'peer': {'type': 'string', 'description': 'Exact peer label from status or its stable machine ID.'}}}},
     {'name': 'dropship_tracer',
      'description': 'Create a ten-minute invitation for THIS Codex or Claude session, or accept a pasted tracer. Accepting checks an encrypted mailbox round trip to the invited inbox. It does not prove an agent is awake. Use for "hypernym dropship tracer" and "hypernym dropship add <tracer>".',
      'inputSchema': {'type': 'object', 'properties': {
@@ -243,6 +249,14 @@ def run_dropship(args: list, env: dict = None, timeout: int = 120) -> tuple:
 
 
 def call_tool(name: str, arguments: dict) -> tuple:
+    if name == 'dropship_local':
+        action = arguments['action']
+        args = [action]
+        if action in ('nickname', 'clear-nickname'):
+            args.append(arguments.get('peer', ''))
+        if action in ('name', 'nickname'):
+            args.append(arguments.get('name', ''))
+        return run_dropship(args)
     if name == 'dropship_tracer':
         env = {'DROPSHIP_AS': arguments['as_session']} if arguments.get('as_session') else {}
         args = ['tracer', arguments['tracer']] if arguments.get('tracer') else ['tracer']

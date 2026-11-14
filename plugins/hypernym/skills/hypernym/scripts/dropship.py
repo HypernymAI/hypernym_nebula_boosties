@@ -190,6 +190,60 @@ def identity() -> dict:
     return me
 
 
+def friend_names(friends=None):
+    """Unique local labels; identity and keys never depend on a display name."""
+    friends = load(FRIENDS, {}) if friends is None else friends
+    nicknames = load(HOME / 'nicknames.json', {})
+    bases = {pid: nicknames.get(pid) or f.get('advertised_name', f['name']) for pid, f in friends.items()}
+    reserved = {identity()['name']}
+    result = {}
+    for pid in sorted(bases):
+        base = bases[pid]
+        name = base
+        if base in reserved or list(bases.values()).count(base) > 1:
+            fingerprint = hashlib.sha256(str(friends[pid]['pub']).encode()).hexdigest()
+            name = base[:23] + '-' + fingerprint[:8]
+        # Even identical public keys or a crafted label cannot overwrite another route.
+        if name in result.values() or name in reserved:
+            name = base[:15] + '-' + hashlib.sha256(pid.encode()).hexdigest()[:16]
+        result[pid] = name
+    return result
+
+
+def local_control(action, name='', peer=''):
+    if action == 'identity':
+        me = identity()
+        return f"This computer: #{me['name']} (ID {me['id']}). Rename with: hypernym dropship name <name>. Keys and friends stay the same."
+    name = name.lstrip('#').lower()
+    if action not in ('name', 'nickname', 'clear-nickname'):
+        raise ValueError('Unknown local control action')
+    if action != 'clear-nickname' and not NAME_RE.fullmatch(name):
+        raise ValueError('Use 1–32 lowercase letters, digits, dots, underscores or hyphens, starting with a letter or digit.')
+    if action == 'name':
+        me = identity()
+        me['name'] = name
+        save(IDENTITY, me)
+    else:
+        friends = load(FRIENDS, {})
+        labels = friend_names(friends)
+        target = peer.lstrip('#').lower()
+        hits = [pid for pid in friends if pid == target or labels[pid] == target]
+        if len(hits) != 1:
+            raise ValueError('Peer is missing or ambiguous. Use its exact status label or machine ID.')
+        names = load(HOME / 'nicknames.json', {})
+        if action == 'clear-nickname':
+            names.pop(hits[0], None)
+        else:
+            if name == identity()['name'] or any(label == name for pid, label in labels.items() if pid != hits[0]):
+                raise ValueError('That local name is already in use.')
+            names[hits[0]] = name
+        save(HOME / 'nicknames.json', names)
+    if running():
+        stop_daemon()
+        start_daemon()
+    return local_control('identity') if action == 'name' else f"Local peer name: #{friend_names()[hits[0]]}. Only this computer uses this nickname."
+
+
 def pair_key(me: dict, peer_pub_hex: str) -> bytes:
     y = int(peer_pub_hex, 16)
     if not 2 <= y <= P - 2:
@@ -453,8 +507,10 @@ def owner_of(name_or_empty: str, peer: str) -> str:
                  if r['name'] == name_or_empty or name_or_empty in r.get('aliases', [])]
         return max(named)[1] if named else ''
     best, last = '', 0.0
+    pid = peer_identity(peer)
     for t in talks():
-        if t['peer'].split('/')[0] == peer and t['ts'] > last and t['sid'] in ss:
+        matches = t['peer_id'] == pid if 'peer_id' in t else t['peer'].split('/')[0] == peer
+        if matches and t['ts'] > last and t['sid'] in ss:
             best, last = t['sid'], t['ts']
     if best:
         return best
@@ -475,6 +531,11 @@ def talks() -> list:
     return out
 
 
+def peer_identity(name):
+    machine = name.split('/')[0]
+    return next((pid for pid, label in friend_names().items() if label == machine), 'name:' + machine)
+
+
 def log_talk(sid: str, peer: str, direction: str) -> None:
     if not sid:
         return
@@ -482,7 +543,7 @@ def log_talk(sid: str, peer: str, direction: str) -> None:
     with _inbox_lock:
         fd = os.open(TALKS, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, 'a') as f:
-            f.write(json.dumps({'sid': sid, 'peer': peer, 'dir': direction, 'ts': time.time()}) + '\n')
+            f.write(json.dumps({'sid': sid, 'peer': peer, 'peer_id': peer_identity(peer), 'dir': direction, 'ts': time.time()}) + '\n')
 
 
 def advertised_sessions() -> list:
@@ -522,6 +583,7 @@ class Courier:
         self.mail_why = ''
         self.peer_sessions = {}    # friend id → the session names they advertise
         self.pairing = None        # {code, status: waiting|done|failed, detail, at}
+        self.refresh_names()
 
     # -- shared with the mailbox (dropship_mail.Mail)
     def sessions_now(self) -> list:
@@ -550,15 +612,31 @@ class Courier:
         if not NAME_RE.match(name):
             name = 'friend-' + pid[:6]
         with self.lock:
-            taken = {v['name'] for k, v in self.friends.items() if k != pid}
-            base, i = name, 2
-            while name in taken:
-                name, i = f'{base[:29]}-{i}', i + 1
-            self.friends[pid] = {'name': name, 'pub': str(card['pub']), 'box': str(card['box']), 'how': how,
-                                 'since': time.time()}
-            save(FRIENDS, self.friends)
+            old = self.friends.get(pid, {})
+            if old and (old['pub'] != str(card['pub']) or ('box' in old and old['box'] != str(card['box']))):
+                raise ValueError('Peer keys changed; existing trust was preserved.')
+            self.friends[pid] = dict(old, name=name, advertised_name=name, pub=str(card['pub']),
+                                     box=str(card['box']), how=how, since=old.get('since', time.time()))
+            self.refresh_names()
+            name = self.friends[pid]['name']
         log(f'paired with {name} ({pid})')
         return name
+
+    def refresh_names(self):
+        for pid, f in self.friends.items():
+            f.setdefault('advertised_name', f['name'])
+        for pid, name in friend_names(self.friends).items():
+            self.friends[pid]['name'] = name
+            if pid in self.peers:
+                self.peers[pid]['name'] = name
+        save(FRIENDS, self.friends)
+
+    def peer_renamed(self, pid, name):
+        if isinstance(name, str) and NAME_RE.fullmatch(name):
+            with self.lock:
+                if pid in self.friends:
+                    self.friends[pid]['advertised_name'] = name
+                    self.refresh_names()
 
     def start_mail(self):
         try:
@@ -581,7 +659,7 @@ class Courier:
                 try:
                     with self.lock:
                         friend = next((dict(v, id=k) for k, v in self.friends.items()
-                                       if v['name'] == job['to'] and 'box' in v), None)
+                                       if (k == job['to_id'] if job.get('to_id') else v['name'] == job['to']) and 'box' in v), None)
                     if friend is None:
                         result = f"#{job['to']} isn't a friend with a mailbox key"
                     else:
@@ -725,6 +803,9 @@ class Courier:
             elif box and 'box' not in known:
                 known['box'] = box
                 save(FRIENDS, self.friends)
+            self.friends[pid]['advertised_name'] = name
+            self.refresh_names()
+            name = self.friends[pid]['name']
             self.peers[pid] = {'name': name, 'ip': addr, 'port': port, 'pub': pub, 'last_seen': time.time(),
                                'kind': 'lan'}
 
@@ -756,7 +837,7 @@ class Courier:
             if len(q) >= RATE_N:
                 return 429, 'rate limited'
             self.rates[msg['from']] = q + [now]
-        if msg['to'] not in (self.me['name'], 'all'):
+        if msg['to'] not in (self.me['name'], self.me['id'], 'all'):
             return 404, 'not me'
         body = clean(msg['body'])
         if not body:
@@ -797,7 +878,7 @@ class Courier:
             with self.lock:
                 self.peers = {k: v for k, v in self.peers.items() if now - v['last_seen'] < 600}
                 s = {'pid': os.getpid(), 'at': now, 'me': {'id': self.me['id'], 'name': self.me['name']},
-                     'home': self.home, 'net': self.net, 'enabled': self.cfg['enabled'], 'tracer_version': 1,
+                     'home': self.home, 'net': self.net, 'enabled': self.cfg['enabled'], 'tracer_version': 1, 'local_control_version': 1,
                      'peers': [{k: v[k] for k in ('name', 'ip', 'port', 'last_seen', 'kind')} | {'id': pid}
                                for pid, v in self.peers.items()],
                      'relays': self.relays, 'warnings': self.warnings[-3:],
@@ -807,7 +888,7 @@ class Courier:
                               'last_seen': {self.friends[k]['name']: t for k, t in
                                             (self.mail.last_seen.items() if self.mail is not None else [])
                                             if k in self.friends}},
-                     'pairing': self.pairing,
+                     'pairing': self.pairing, 'sessions_by_id': dict(self.peer_sessions),
                      'sessions': {self.friends[k]['name']: v for k, v in self.peer_sessions.items() if k in self.friends}}
             save(STATE, s)
             self.stop.wait(STATE_S)
@@ -972,6 +1053,8 @@ def state() -> dict:
 def directory() -> dict:
     """name → where to send it: {'kind': 'lan', peer…} or {'kind': 'relay', relay…}. LAN wins over a relay."""
     s, out = state(), {}
+    friends = load(FRIENDS, {})
+    labels = friend_names(friends)
     relays = {r['label']: r for r in config()['relays']}
     for label, info in s['relays'].items():
         if info['ok'] and label in relays:
@@ -979,12 +1062,14 @@ def directory() -> dict:
                 if n != info['you']:
                     out[n] = {'kind': 'relay', 'relay': relays[label], 'label': label}
     if 'mail' in s and s['mail']['ok']:
-        for n in s['mail']['friends']:
-            out[n] = {'kind': 'mail'}
+        for pid, n in labels.items():
+            if 'box' in friends[pid]:
+                out[n] = {'kind': 'mail', 'id': pid}
     now = time.time()
     for p in s['peers']:
         if p['kind'] == 'lan' and now - p['last_seen'] < PEER_GONE_S:
-            out[p['name']] = dict(p)
+            label = labels.get(p['id'], p['name'])
+            out[label] = dict(p, name=label)
     return out
 
 
@@ -992,13 +1077,13 @@ def where(v: dict) -> str:
     return {'lan': 'home wi-fi', 'mail': 'mailbox'}[v['kind']] if v['kind'] in ('lan', 'mail') else v['label']
 
 
-def send_mail(name: str, body: str, to_s: str = '', from_s: str = '', sid: str = '') -> str:
+def send_mail(name: str, body: str, to_s: str = '', from_s: str = '', sid: str = '', peer_id: str = '') -> str:
     """Queue a mailbox send for the daemon (it holds the keys) and wait for its answer."""
     _private_dir()
     OUTBOX.mkdir(exist_ok=True)
     rid = f'{time.time():.6f}-{secrets.token_hex(4)}'
     req = OUTBOX / f'{rid}.json'
-    save(req, {'to': name, 'body': body, 'to_s': to_s, 'from_s': from_s, 'sid': sid})
+    save(req, {'to': name, 'to_id': peer_id or next((pid for pid, label in friend_names().items() if label == name), ''), 'body': body, 'to_s': to_s, 'from_s': from_s, 'sid': sid})
     done = req.with_suffix('.done')
     deadline = time.time() + 20
     while time.time() < deadline:
@@ -1040,7 +1125,10 @@ def send(to: str, body: str, sid: str = '') -> str:
         log_talk(owner, f"{me['name']}/{from_s}" if from_s else me['name'], 'in')
         return f"sent to #{me['name']}/{session_record(owner)['name']} (this computer)"
     d = directory()
-    known = state()['sessions'] if 'sessions' in state() else {}
+    snapshot = state()
+    known = snapshot.get('sessions', {})
+    if to in d and d[to].get('id') in snapshot.get('sessions_by_id', {}):
+        known = dict(known, **{to: snapshot['sessions_by_id'][d[to]['id']]})
     if to_s and to in known and known[to] and to_s not in known[to]:
         return f"#{to} has no session called {to_s}. Its sessions: {', '.join(known[to])}"
     targets = list(d) if to == 'all' else [to]
@@ -1053,7 +1141,7 @@ def send(to: str, body: str, sid: str = '') -> str:
             if t['kind'] == 'relay':
                 _relay_post(t['relay'], '/api/messages', {'body': body, 'to': name})
             elif t['kind'] == 'mail':
-                r = send_mail(name, body, to_s, from_s, sid)
+                r = send_mail(name, body, to_s, from_s, sid, t.get('id', ''))
                 if r.startswith('queued'):
                     return f'#{name}/{to_s}: {r}; delivery not confirmed'
                 if r != 'ok' and not r.startswith('queued'):
@@ -1063,7 +1151,7 @@ def send(to: str, body: str, sid: str = '') -> str:
                 continue                                    # the daemon logged it in the inbox
             else:
                 peer = friends[t['id']]
-                msg = {'from': me['id'], 'to': name, 'ts': time.time(), 'nonce': secrets.token_hex(12), 'body': body,
+                msg = {'from': me['id'], 'to': peer.get('advertised_name', name), 'ts': time.time(), 'nonce': secrets.token_hex(12), 'body': body,
                        'to_s': to_s, 'from_s': from_s}
                 msg['mac'] = sign(pair_key(me, peer['pub']), msg)
                 req = urllib.request.Request(f"http://{t['ip']}:{t['port']}/m", data=json.dumps(msg).encode(),
@@ -1624,6 +1712,7 @@ def status_text() -> str:
         lines.append('Mailbox (friends anywhere, end-to-end encrypted): '
                      + ('ready' if s['mail']['ok'] else f"not ready — {s['mail']['why'] or 'starting'}")
                      + f" via {cfg['mailbox']}")
+    lines.append('Rename this computer: hypernym dropship name <name> (identity and friends are preserved).')
     lines.append('Tracer: ' + ('ready' if s.get('tracer_version') == 1 else
                               'courier restart required for tracer support'))
     if 'pairing' in s and s['pairing'] is not None and s['pairing']['status'] in ('new', 'waiting'):
@@ -1675,7 +1764,7 @@ def main() -> int:
                      ev['cwd'] if 'cwd' in ev else '')
         except (ValueError, KeyError, TypeError):
             pass
-        if running() and state().get('tracer_version') != 1:
+        if running() and state().get('local_control_version') != 1:
             stop_daemon()
         start_daemon()
         return 0
@@ -1746,18 +1835,22 @@ def main() -> int:
         result = send(a[1], ' '.join(a[2:]), sid)
         print(result + ('. Call dropship_wait to wait for the answer.' if result.startswith('sent') else ''))
         return 0
-    if len(a) == 2 and a[0] == 'name':
-        n = a[1].lower()
-        if not NAME_RE.match(n):
-            sys.exit('name: lowercase letters, digits, . _ - (up to 32)')
-        me = identity()
-        me['name'] = n
-        save(IDENTITY, me)
-        stop_daemon()
-        time.sleep(1)
-        start_daemon()
-        print(f'You are now #{n}.')
-        return 0
+    if a and a[0] in ('identity', 'name', 'nickname', 'clear-nickname'):
+        try:
+            if a == ['identity']:
+                print(local_control('identity'))
+            elif len(a) == 2 and a[0] == 'name':
+                print(local_control('name', a[1]))
+            elif len(a) == 3 and a[0] == 'nickname':
+                print(local_control('nickname', a[2], a[1]))
+            elif len(a) == 2 and a[0] == 'clear-nickname':
+                print(local_control('clear-nickname', peer=a[1]))
+            else:
+                raise ValueError('Use identity, name <name>, nickname <peer> <name>, or clear-nickname <peer>')
+            return 0
+        except ValueError as e:
+            print(str(e))
+            return 1
     if len(a) == 2 and a[0] == 'forget':
         f = load(FRIENDS, {})
         f = {k: v for k, v in f.items() if v['name'] != a[1].lstrip('#').lower()}

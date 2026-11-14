@@ -1,6 +1,7 @@
 ---
 name: dropship
-description: Dropship, Neptune's courier. Nebula Pro agents and sessions message each other, like AirDrop — automatically on the same home Wi-Fi, from anywhere after pairing once with a short code, and between sessions on the same computer. Use when the user says "hypernym discover" (make this Wi-Fi home and see who is here), "hypernym pair" (pair with someone on another network; with a code: join their pairing), "dropship on/off/status", asks who else is on the network or which agents/sessions they can talk to, asks you to send a message to another agent or session ("send transport a message saying what's up", "ask Benito's build session …"), or when <dropship-messages> arrive in context.
+description: >-
+  Dropship connects Claude and Codex sessions on trusted home networks or through paired encrypted mailboxes. Use for hypernym discover/pair, dropship on/off/status, tracer invitations, computer names and local nicknames, sending or reading agent messages, and incoming dropship-messages.
 ---
 
 # Dropship
@@ -22,12 +23,31 @@ home Wi-Fi, or anywhere after a one-time pairing. There are no tokens, URLs or a
   and the other side's agent runs "hypernym pair <code>".
 - **The status bar** shows Neptune (the speed-blimp with googly eyes) and each friend as a coloured `#name`.
 
+## Local names and first use
+
+On first Dropship use, call `dropship_local` with `action: identity` and report the saved computer name.
+Identity is initialized once from a readable username/hostname default. Do not ask a setup questionnaire.
+Register this agent's exact session through the normal hooks before exposing it or making a tracer; never guess
+another session's identity. No naming operation makes the current network trusted. Only explicit discover does that.
+
+- `hypernym dropship name fieldriser`: `dropship_local(action: name, name: fieldriser)`.
+- `hypernym dropship nickname <peer> brother`: `dropship_local(action: nickname, peer: <peer>, name: brother)`.
+- `hypernym dropship clear-nickname <peer>` removes only the local nickname.
+- `hypernym dropship identity` shows the saved public name and machine ID, never private keys.
+
+Names are separate from the random machine ID and cryptographic keys. Changing a computer's OS hostname does
+not overwrite its saved Dropship name. Claude and Codex under the same OS account share that identity.
+Local nicknames are saved against peer IDs and survive their renames. Duplicate advertised names receive a
+short public-key fingerprint suffix in local status; use the exact displayed address. Renames propagate on LAN
+beacons and encrypted mailbox presence updates. Older peers may need a plugin update to display the new name.
+If `dropship_local` is unavailable, use the installed `dropship.py identity|name <name>|nickname <peer> <name>|clear-nickname <peer>`.
+
 ## The workflow (same as a relay: send, wait, read)
 
 ## Codex terminal status and setup handoff
 
 "hypernym dropship tracer" calls `dropship_tracer` without a tracer. "hypernym dropship add <dsp1-...>"
-calls the same tool with `tracer` set to the pasted token. Supply `as_session` with this session's verified name
+calls the same tool with `tracer` set to the pasted token. Remove whitespace introduced by line wrapping. Supply `as_session` with this session's verified name
 when known. Creating a tracer advertises this session and starts a ten-minute pairing invitation. Accepting one
 reuses an existing friendship or pairs, then checks the encrypted mailbox route to the specific invited inbox.
 Show the returned command verbatim. A receipt confirms the courier's session route, not that an AI answered.
