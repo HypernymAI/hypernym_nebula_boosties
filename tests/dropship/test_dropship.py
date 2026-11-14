@@ -40,7 +40,7 @@ class Machine:
         self.port = str(47900 + Machine.count)
         self.home.mkdir(parents=True)
         (self.home / 'transcripts').mkdir()
-        self.env = dict(os.environ, DROPSHIP_HOME=str(self.home), DROPSHIP_PORT=self.port, DROPSHIP_UDP=UDP,
+        self.env = dict(os.environ, DROPSHIP_SESSION='', CODEX_THREAD_ID='', DROPSHIP_HOME=str(self.home), DROPSHIP_PORT=self.port, DROPSHIP_UDP=UDP,
                         DROPSHIP_VENV=str(VENV))
         self.py(f"""
 c = d.config(); c['homes'] = {{d.network()['fingerprint']: 'test'}} if {home_wifi} else {{}}; d.save(d.CONFIG, c)
@@ -222,7 +222,7 @@ def test_sender_is_auto_added_and_alias(a, b, c, d):
 
 def test_listener_wakes_with_the_reply(a, b, c, d):
     quiet = Session(a, 'a-quiet-11', a.home / 'transcripts' / 'a-quiet-11.jsonl')
-    build = Session(b, 'b-build-1', b.home / 'transcripts' / 'b-build-1.jsonl')
+    build = b.session('b-build-1', 'Build')
     got = build.got()
     check('alias form works' in got and '#alice/quiet' in got and 'Answer it yourself' in got, got)
     p = subprocess.Popen([sys.executable, str(DROPSHIP), 'listen', 'a-quiet-11'], env=a.env, stdout=subprocess.PIPE,
@@ -249,16 +249,16 @@ def test_typed_text_is_never_sent(a, b, c, d):
 
 def test_wait_works_like_wait_for_reply(a, b, c, d):
     asker = a.session('a-asker-14', 'Asker')
-    build = Session(b, 'b-build-1', b.home / 'transcripts' / 'b-build-1.jsonl')
+    build = b.session('b-build-1', 'Build')
     t0 = time.time()
-    check('timed out' in asker.wait(2) and time.time() - t0 >= 1.5, 'wait blocks, then times out quietly')
+    check('do not retry automatically' in asker.wait(2) and time.time() - t0 >= 1.5, 'wait blocks, then times out quietly')
     asker.send('#bob/build what is 2+2?')
     replier = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)'], env=b.env)
     replier.wait()
     build.send('#alice/asker 4')                              # arrives while asker is waiting
     out = asker.wait(20)
     check('#bob/build' in out and ': 4' in out and 'You are #alice/asker' in out, out)
-    check('timed out' in asker.wait(1), 'marked read: not returned twice')
+    check('do not retry automatically' in asker.wait(1), 'marked read: not returned twice')
     build.send('#alice/asker already here')                   # arrives BEFORE wait is called
     time.sleep(1)
     check('already here' in asker.wait(5), 'an unread message is returned at once')
@@ -272,8 +272,8 @@ def test_borg_mode(a, b, c, d):
     rec = json.loads((a.home / 'sessions' / 'a-drone-15.json').read_text())
     check(rec['borg'] and rec['exposed'], 'borg makes the session reachable and remembers the mode')
     later = drone.prompt('unrelated question')['hookSpecificOutput']['additionalContext']
-    check('go back to the dropship_wait loop' in later, 'every later prompt reminds a borg session to resume')
-    other = Session(b, 'b-build-1', b.home / 'transcripts' / 'b-build-1.jsonl')
+    check('stay silent while it is pending' in later, 'borg resumes with a single silent wait')
+    other = b.session('b-build-1', 'Build')
     wait(lambda: 'drone' in b.cli('status'), 20, 'bob learns #alice/drone')
     sent = other.send('#alice/drone are you there?')
     check('sent to #alice/drone' in sent, sent)
@@ -319,6 +319,57 @@ def test_mcp_wait_never_blocks_a_send(a, b, c, d):
         check('cancelled' in r2['result']['content'][0]['text'], f'cancel stops the wait: {r2}')
     finally:
         srv.kill()
+
+
+def test_borg_silent_wait_and_cancel(a, b, c, d):
+    import queue
+    import threading
+    drone = a.session('silent-drone', 'Silent Drone')
+    drone.prompt('hypernym dropship borg')
+    srv = subprocess.Popen([sys.executable, str(SCRIPTS / 'hypernym_mcp_server.py')], stdin=subprocess.PIPE,
+                           stdout=subprocess.PIPE, text=True, env=a.env, bufsize=1)
+    replies = queue.Queue()
+    def consume():
+        for line in srv.stdout:
+            replies.put(json.loads(line))
+    threading.Thread(target=consume, daemon=True).start()
+    def rpc(message):
+        srv.stdin.write(json.dumps(dict(jsonrpc='2.0', **message)) + '\n')
+        srv.stdin.flush()
+    try:
+        rpc({'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2025-06-18', 'capabilities': {},
+             'clientInfo': {'name': 'codex-mcp-client', 'version': 'test'}}})
+        check(replies.get(timeout=5)['id'] == 1, 'initialized')
+        rpc({'id': 2, 'method': 'tools/call', 'params': {'name': 'dropship_wait',
+             'arguments': {'as_session': 'silent-drone', 'timeout_seconds': 1}}})
+        try:
+            unexpected = replies.get(timeout=float(os.environ.get('DROPSHIP_IDLE_TEST_SECONDS', '3')))
+            raise AssertionError(f'Borg must stay silent beyond a requested timeout: {unexpected}')
+        except queue.Empty:
+            pass
+        sender = a.session('silent-sender', 'Silent Sender')
+        result = sender.send('#alice/silent-drone wake-on-message')
+        check(result.startswith('sent'), result)
+        response = replies.get(timeout=5)
+        check(response['id'] == 2 and 'wake-on-message' in response['result']['content'][0]['text'], 'one response on actual mail')
+        rpc({'id': 3, 'method': 'tools/call', 'params': {'name': 'dropship_wait', 'arguments': {'as_session': 'silent-drone'}}})
+        time.sleep(.5)
+        rpc({'method': 'notifications/cancelled', 'params': {'requestId': 3}})
+        response = replies.get(timeout=5)
+        check(response['id'] == 3 and response['result']['isError'], 'pending silent wait can be cancelled')
+        # Turning Borg off from another invocation wakes the waiter once, without a retry instruction.
+        rpc({'id': 4, 'method': 'tools/call', 'params': {'name': 'dropship_wait', 'arguments': {'as_session': 'silent-drone'}}})
+        time.sleep(.5)
+        drone.prompt('hypernym dropship borg off')
+        response = replies.get(timeout=5)
+        check(response['id'] == 4 and 'do not retry automatically' in response['result']['content'][0]['text'], 'Borg off stops waiting')
+    finally:
+        srv.stdin.close()
+        try:
+            srv.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            srv.kill()
+            srv.wait()
 
 
 def test_sessions_history_order(a, b, c, d):

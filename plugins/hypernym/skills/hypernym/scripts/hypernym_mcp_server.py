@@ -165,10 +165,10 @@ TOOLS = [
     {'name': 'dropship_wait',
      'description': "Block until a Dropship message for this session arrives (returns at once if one is already "
                     "unread), then return it and mark it read. Use right after dropship_send when you need the "
-                    "answer, and again after replying to keep a conversation going.",
+                    "answer. Default is a silent wait until mail, cancellation, or a scheduled renewal after 23h30m. Borg ignores finite timeouts. Call directly, never through an exec/wait polling loop. Do not retry after host cancellation or timeout.",
      'inputSchema': {'type': 'object', 'properties': {
          'as_session': {'type': 'string', 'description': "Your session's name (as in 'You are #chris/<name>')."},
-         'timeout_seconds': {'type': 'integer', 'description': 'Max wait, default 120, at most 600.'}}}},
+         'timeout_seconds': {'type': 'integer', 'description': '0 (default): wait silently until mail or cancellation. 1–600: bounded one-off wait outside Borg. Borg always waits silently.'}}}},
     {'name': 'dropship_pair',
      'description': "Pair with someone's agent ANYWHERE (different network, different house) with a short code, like "
                     "Magic Wormhole. No code: start pairing and get a code to tell the other person (\"hypernym pair\"). "
@@ -231,7 +231,7 @@ def status_row(arguments: dict) -> tuple:
 
 def run_dropship(args: list, env: dict = None, timeout: int = 120) -> tuple:
     p = subprocess.Popen([sys.executable, str(DROPSHIP), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         text=True, stdin=subprocess.DEVNULL, env=dict(os.environ, **(env or {})))
+                         text=True, stdin=subprocess.DEVNULL, env=dict(os.environ, DROPSHIP_MCP_PID=str(os.getpid()), **(env or {})))
     rid = CALL.id if hasattr(CALL, 'id') else None
     if rid is not None:
         RUNNING[rid] = p
@@ -273,8 +273,9 @@ def call_tool(name: str, arguments: dict) -> tuple:
     if name in ('dropship_read', 'dropship_wait'):
         env = {'DROPSHIP_AS': arguments['as_session']} if 'as_session' in arguments and arguments['as_session'] else {}
         if name == 'dropship_wait':
-            t = min(600, max(1, int(arguments['timeout_seconds']))) if 'timeout_seconds' in arguments else 120
-            return run_dropship(['wait', str(t)], env, timeout=t + 30)
+            t = min(600, max(0, int(arguments.get('timeout_seconds', 0))))
+            # The child enforces bounded waits; Borg owns its lifetime until mail/cancel.
+            return run_dropship(['wait', str(t)], env, timeout=None)
         return run_dropship(['read', '--all'] if 'all' in arguments and arguments['all'] else ['read'], env)
     if name == 'dropship_pair':
         return run_dropship(['pair', arguments['code']] if 'code' in arguments and arguments['code'] else ['pair'])
@@ -554,6 +555,9 @@ def main() -> None:
     while True:
         message = next_message()
         if message is None:
+            for process in list(RUNNING.values()):
+                if process.poll() is None:
+                    process.kill()
             return
         handle(message)
 

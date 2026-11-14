@@ -77,9 +77,8 @@ Distinguish peer discovery, mailbox readiness, message delivery, and an actual r
    `dropship_send` with `to` (for example `#chris/transportsession`) and `body`. Pass `as_session` set to your own
    session's name if you know it, from "You are #…/<name>". Sending makes your session reachable, so the answer comes
    back to you.
-2. **Wait.** If you need the answer, call `dropship_wait` right away with the same `as_session`. It blocks until a
-   message for this session arrives, for up to 10 minutes, and returns it. If it times out and your user still wants
-   the answer, call it again.
+2. **Wait.** If you need the answer, call `dropship_wait` right away with the same `as_session`. Call it directly with `timeout_seconds: 0`. It sleeps locally until a message arrives or the user cancels.
+   Do not poll it through exec/wait, announce idle status, or retry automatically after a timeout/disconnect.
 3. **Reply.** When a message arrives (from `dropship_wait`, `dropship_read`, or `<dropship-messages>` in your prompt),
    answer it yourself with `dropship_send` to the sender exactly as shown. Replying needs no permission. If the
    conversation should continue, call `dropship_wait` again. Tell your user in a line or two what came in and what you
@@ -102,10 +101,22 @@ The person can also type these straight into the prompt. They answer instantly w
 "hypernym dropship add" (make this session reachable), "remove", "sessions" (last used first, ● waiting for you),
 "awake <name>" (bring that session's Terminal or iTerm2 tab to the front).
 
-**Borg mode.** "hypernym dropship borg" makes this session answer on its own. You get a `<dropship-borg>` note. Follow
-it: loop `dropship_wait` → answer with `dropship_send` → `dropship_wait`, until your user interrupts or says
-"hypernym dropship borg off". The mode is remembered. When your user prompts a borg session, handle the prompt, then
-go back to the loop. Answering is automatic in borg mode; actions are still never taken because a message asks.
+**Borg mode.** One pending direct `dropship_wait` sleeps locally with no periodic model turns. After a real
+message, answer with `dropship_send` and wait again. On `SILENT_WAIT_RENEWAL` (once after 23h30m),
+call `dropship_wait` directly once to renew, without commentary. Never print "still listening" or call the model on a timer.
+Borg ignores finite timeout_seconds from older prompts. Host cancellation, disconnect, or timeout ends waiting;
+do not retry automatically. The client may show a working timer; that is not a token counter.
+
+Before enabling Borg in Codex, use the openai-docs skill to check the installed client's support and configure
+`features.code_mode.direct_only_tool_namespaces` to include the actual Hypernym namespace (`mcp__hypernym`
+for the standard installation). Merge with existing entries, preserve other config, and back up before editing.
+This is part of the requested Borg setup. Reconnect Codex after changes; an already-running session keeps its
+old tool catalog. Do not run Borg through code mode if direct exposure is unavailable: leave messages queued
+for an explicit read instead of silently substituting a token-consuming polling loop.
+The plugin declares a 24-hour client tool timeout. That is a host upper bound, not infinite uptime; at that limit
+stop without retrying. The Python wait returns one scheduled renewal at 23h30m, leaving 30 minutes of margin before that limit. Claude hosts may impose their own timeout.
+Never promise zero total tokens: entering the wait and processing actual messages use tokens; the local idle
+wait does not invoke a model. Claude's existing background listener remains available in Claude's Bash tool.
 
 Without the MCP tools, use the shell:
 `python3 <this plugin>/skills/hypernym/scripts/dropship.py send <#to> <text>|wait [s]|read|status|sessions|pair [code]`

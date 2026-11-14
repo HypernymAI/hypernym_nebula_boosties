@@ -5,7 +5,8 @@
       "args": [
         "-c",
         "r=\"${CLAUDE_PLUGIN_ROOT}\"; s=skills/hypernym/scripts/hypernym_mcp_server.py; if [ ! -f \"$r/$s\" ]; then r=$(ls -td \"$HOME\"/.codex/plugins/cache/*/hypernym/*/ 2>/dev/null | head -1); fi; py=python3; $py -c 1 2>/dev/null || py=python; exec $py \"${r%/}/$s\""
-      ]
+      ],
+      "tool_timeout_sec": 86400
     }
   }
 }
