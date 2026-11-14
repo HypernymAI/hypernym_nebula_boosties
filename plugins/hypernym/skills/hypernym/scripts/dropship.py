@@ -163,6 +163,10 @@ def config() -> dict:
 # MAILBOX_RECHECK_S; if the pointer can't be read, the last known address is used, and only with nothing known at all
 # the public ntfy.sh (rate-limited per connection).
 POINTER = 'https://mailbox-dropship.vercel.app/dropship/mailbox.json'
+# Fingerprint of the courier's own code: a running courier whose fingerprint differs (plugin updated) is restarted.
+_HERE = Path(__file__).resolve().parent
+CODE_TAG = hashlib.sha256(b''.join((_HERE / f).read_bytes() for f in ('dropship.py', 'dropship_mail.py')
+                                   if (_HERE / f).exists())).hexdigest()[:12]
 MAILBOX_CACHE = HOME / 'mailbox.json'
 MAILBOX_RECHECK_S = 6 * 3600
 MAILBOX_HEALTH_S = float(os.environ['DROPSHIP_MAILBOX_HEALTH_S']) if 'DROPSHIP_MAILBOX_HEALTH_S' in os.environ else 300.0
@@ -682,7 +686,16 @@ class Courier:
         if 'box_priv' not in self.me:
             self.me['box_priv'], self.me['box_pub'] = dropship_mail.new_box_keys()
             save(IDENTITY, self.me)
-        self.mail = dropship_mail.Mail(self, mailbox_url())
+        base = mailbox_url()
+        try:                                            # a cached address may be a mailbox that was redeployed
+            with urllib.request.urlopen(urllib.request.Request(
+                    f'{base}/v1/health', headers={'User-Agent': 'dropship/1 (Nebula Pro)'}), timeout=10) as r:
+                ok = r.status == 200
+        except OSError:
+            ok = False
+        if not ok:
+            base = mailbox_url(refresh=True)
+        self.mail = dropship_mail.Mail(self, base)
         for t in (self.mail.listen, self.mail.pinger, self.outbox_loop, self.pairing_loop, self.mailbox_watch):
             threading.Thread(target=t, daemon=True).start()
 
@@ -963,7 +976,7 @@ class Courier:
             now = time.time()
             with self.lock:
                 self.peers = {k: v for k, v in self.peers.items() if now - v['last_seen'] < 600}
-                s = {'pid': os.getpid(), 'at': now, 'me': {'id': self.me['id'], 'name': self.me['name']},
+                s = {'pid': os.getpid(), 'at': now, 'code': CODE_TAG, 'me': {'id': self.me['id'], 'name': self.me['name']},
                      'home': self.home, 'net': self.net, 'enabled': self.cfg['enabled'], 'tracer_version': 1, 'local_control_version': 1, 'mailbox_version': 2,
                      'peers': [{k: v[k] for k in ('name', 'ip', 'port', 'last_seen', 'kind')} | {'id': pid}
                                for pid, v in self.peers.items()],
@@ -1890,8 +1903,9 @@ def main() -> int:
                      ev['cwd'] if 'cwd' in ev else '')
         except (ValueError, KeyError, TypeError):
             pass
-        if running() and state().get('mailbox_version') != 2:
-            stop_daemon()
+        st = state()
+        if running() and ('code' not in st or st['code'] != CODE_TAG):
+            stop_daemon()                               # an older courier (plugin updated): restart on this code
         start_daemon()
         return 0
     if a == ['sessions']:
