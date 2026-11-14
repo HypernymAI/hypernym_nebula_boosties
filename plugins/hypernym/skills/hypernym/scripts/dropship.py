@@ -153,9 +153,40 @@ def save(p: Path, data) -> None:
 
 def config() -> dict:
     c = load(CONFIG, {})
-    base = {'enabled': True, 'homes': {}, 'relays': [], 'mailbox': 'https://ntfy.sh'}
+    base = {'enabled': True, 'homes': {}, 'relays': [], 'mailbox': 'auto'}
     base.update(c if isinstance(c, dict) else {})
     return base
+
+
+# The mailbox (ntfy) every Dropship uses unless config.json names one: Hypernym's own server, whose current address is
+# published at POINTER (Vercel project mailbox-dropship). The answer is cached in MAILBOX_CACHE and rechecked every
+# MAILBOX_RECHECK_S; if the pointer can't be read, the last known address is used, and only with nothing known at all
+# the public ntfy.sh (rate-limited per connection).
+POINTER = 'https://mailbox-dropship.vercel.app/dropship/mailbox.json'
+MAILBOX_CACHE = HOME / 'mailbox.json'
+MAILBOX_RECHECK_S = 6 * 3600
+FALLBACK_MAILBOX = 'https://ntfy.sh'
+
+
+def mailbox_url(refresh: bool = False) -> str:
+    configured = config()['mailbox']
+    if configured and configured != 'auto':
+        return str(configured).rstrip('/')
+    cached = load(MAILBOX_CACHE, {})
+    cached = cached if isinstance(cached, dict) and 'url' in cached and 'fetched' in cached else {}
+    if cached and not refresh and time.time() - float(cached['fetched']) < MAILBOX_RECHECK_S:
+        return cached['url']
+    try:
+        req = urllib.request.Request(POINTER, headers={'User-Agent': 'dropship/1 (Nebula Pro)'})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            u = str(json.loads(r.read(4096))['mailbox']).rstrip('/')
+        if not u.startswith('https://'):
+            raise ValueError(f'pointer gave a non-https mailbox: {u[:80]}')
+        save(MAILBOX_CACHE, {'url': u, 'fetched': time.time()})
+        return u
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        log(f'mailbox pointer unreadable ({e}); using {cached["url"] if cached else FALLBACK_MAILBOX}')
+        return cached['url'] if cached else FALLBACK_MAILBOX
 
 
 def clean(text: str, limit: int = MAX_BODY) -> str:
@@ -647,36 +678,73 @@ class Courier:
         if 'box_priv' not in self.me:
             self.me['box_priv'], self.me['box_pub'] = dropship_mail.new_box_keys()
             save(IDENTITY, self.me)
-        self.mail = dropship_mail.Mail(self, self.cfg['mailbox'])
-        for t in (self.mail.listen, self.mail.pinger, self.outbox_loop, self.pairing_loop):
+        self.mail = dropship_mail.Mail(self, mailbox_url())
+        for t in (self.mail.listen, self.mail.pinger, self.outbox_loop, self.pairing_loop, self.mailbox_watch):
             threading.Thread(target=t, daemon=True).start()
 
+    def mailbox_watch(self):
+        """Follow the mailbox pointer: if Hypernym moves the mailbox, switch over live (the stream reconnects)."""
+        while not self.stop.wait(MAILBOX_RECHECK_S):
+            u = mailbox_url(refresh=True)
+            if self.mail is not None and u != self.mail.base:
+                log(f'mailbox moved: {self.mail.base} → {u}')
+                self.mail.base = u
+                stream = self.mail.stream
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+
     def outbox_loop(self):
+        from dropship_mail import MailboxDeferred
         while not self.stop.is_set():
             for req in sorted(OUTBOX.glob('*.json')):
                 job = load(req, None)
+                if isinstance(job, dict) and job.get('retry_at', 0) > time.time():
+                    continue
                 result = 'not delivered (bad request)'
+                retry_at = 0
                 try:
+                    if not isinstance(job, dict):
+                        raise ValueError('bad request')
                     with self.lock:
                         friend = next((dict(v, id=k) for k, v in self.friends.items()
                                        if (k == job['to_id'] if job.get('to_id') else v['name'] == job['to']) and 'box' in v), None)
                     if friend is None:
-                        result = f"#{job['to']} isn't a friend with a mailbox key"
+                        raise ValueError('peer has no mailbox key')
+                    job.setdefault('mid', secrets.token_hex(16))
+                    job['filename'] = req.name
+                    job['to_id'] = friend['id']
+                    save(req, job)
+                    self.mail.send(friend, job['body'], 'msg', job.get('to_s', ''), job.get('from_s', ''), job=job)
+                    append_inbox({'dir': 'out', 'via': 'mailbox', 'from': self.me['name'], 'from_s': job.get('from_s', ''),
+                                  'to': friend['name'], 'to_s': job.get('to_s', ''), 'session': job.get('sid', ''),
+                                  'ts': time.time(), 'body': job['body']})
+                    result = 'ok'
+                except MailboxDeferred as e:
+                    retry_at = e.retry_at
+                    result = f'queued (provider cooldown until {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(retry_at))}: {e})'
+                except OSError as e:
+                    # Permanent HTTP client errors cannot be repaired by retrying.
+                    if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500 and e.code not in (408, 429):
+                        result = f'not delivered (HTTP {e.code})'
                     else:
-                        to_s = job['to_s'] if 'to_s' in job else ''
-                        from_s = job['from_s'] if 'from_s' in job else ''
-                        self.mail.send(friend, job['body'], 'msg', to_s, from_s)
-                        append_inbox({'dir': 'out', 'via': 'mailbox', 'from': self.me['name'], 'from_s': from_s,
-                                      'to': friend['name'], 'to_s': to_s, 'session': job['sid'] if 'sid' in job else '',
-                                      'ts': time.time(), 'body': job['body']})
-                        result = 'ok'
-                except (OSError, ValueError, KeyError, TypeError) as e:
+                        attempts = job.get('attempts', 0) + 1
+                        job['attempts'] = attempts
+                        retry_at = time.time() + min(3600, 10 * 2 ** min(attempts, 9))
+                        result = f'queued (temporary transport error: {e})'
+                except (ValueError, KeyError, TypeError) as e:
                     result = f'not delivered ({e})'[:200]
+                if retry_at:
+                    job['retry_at'] = retry_at
+                    save(req, job)
                 save(req.with_suffix('.done'), {'result': result})
-                try:
-                    req.unlink()
-                except OSError:
-                    pass
+                if not retry_at:
+                    try:
+                        req.unlink()
+                    except OSError:
+                        pass
             self.stop.wait(0.3)
 
     def pairing_loop(self):
@@ -878,11 +946,14 @@ class Courier:
             with self.lock:
                 self.peers = {k: v for k, v in self.peers.items() if now - v['last_seen'] < 600}
                 s = {'pid': os.getpid(), 'at': now, 'me': {'id': self.me['id'], 'name': self.me['name']},
-                     'home': self.home, 'net': self.net, 'enabled': self.cfg['enabled'], 'tracer_version': 1, 'local_control_version': 1,
+                     'home': self.home, 'net': self.net, 'enabled': self.cfg['enabled'], 'tracer_version': 1, 'local_control_version': 1, 'mailbox_version': 2,
                      'peers': [{k: v[k] for k in ('name', 'ip', 'port', 'last_seen', 'kind')} | {'id': pid}
                                for pid, v in self.peers.items()],
                      'relays': self.relays, 'warnings': self.warnings[-3:],
                      'mail': {'ok': self.mail is not None and not self.mail.error,
+                              'available': self.mail is not None,
+                              'limit': self.mail.limit_status() if self.mail is not None else {},
+                              'queued': len(list(OUTBOX.glob('*.json'))),
                               'why': self.mail_why or (self.mail.error if self.mail is not None else ''),
                               'friends': [v['name'] for v in self.friends.values() if 'box' in v and self.mail is not None],
                               'last_seen': {self.friends[k]['name']: t for k, t in
@@ -1061,7 +1132,7 @@ def directory() -> dict:
             for n in info['participants']:
                 if n != info['you']:
                     out[n] = {'kind': 'relay', 'relay': relays[label], 'label': label}
-    if 'mail' in s and s['mail']['ok']:
+    if 'mail' in s and s['mail'].get('available', s['mail']['ok']):
         for pid, n in labels.items():
             if 'box' in friends[pid]:
                 out[n] = {'kind': 'mail', 'id': pid}
@@ -1743,7 +1814,12 @@ def status_text() -> str:
     if 'mail' in s:
         lines.append('Mailbox (friends anywhere, end-to-end encrypted): '
                      + ('ready' if s['mail']['ok'] else f"not ready — {s['mail']['why'] or 'starting'}")
-                     + f" via {cfg['mailbox']}")
+                     + f" via {mailbox_url()}")
+    if s.get('mail', {}).get('limit'):
+        limit = s['mail']['limit']
+        lines.append(f"Mailbox sending paused: {limit['reason']}; retry after {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(limit['until']))}.")
+    if s.get('mail', {}).get('queued'):
+        lines.append(f"Mailbox messages queued: {s['mail']['queued']} (not delivered yet).")
     lines.append('Rename this computer: hypernym dropship name <name> (identity and friends are preserved).')
     lines.append('Tracer: ' + ('ready' if s.get('tracer_version') == 1 else
                               'courier restart required for tracer support'))
@@ -1796,7 +1872,7 @@ def main() -> int:
                      ev['cwd'] if 'cwd' in ev else '')
         except (ValueError, KeyError, TypeError):
             pass
-        if running() and state().get('local_control_version') != 1:
+        if running() and state().get('mailbox_version') != 2:
             stop_daemon()
         start_daemon()
         return 0
