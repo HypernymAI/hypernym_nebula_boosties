@@ -122,6 +122,22 @@ Without the MCP tools, use the shell:
 `python3 <this plugin>/skills/hypernym/scripts/dropship.py send <#to> <text>|wait [s]|read|status|sessions|pair [code]`
 with `DROPSHIP_AS=<your session name>` in the environment.
 
+## Waking idle sessions (no wait loop needed)
+
+When mail arrives for a reachable session, Dropship wakes it, so nobody has to sit in `dropship_wait`.
+
+- **Codex:** the courier runs `codex queue --thread <id> --resume` with a short notice: "[Dropship] N new message(s)
+  for #you from #them. Call dropship_read…". It sends at most one notice per batch, 30 seconds apart, and retries
+  while the mail is unread, up to three times. The peer's text never goes into the queued prompt.
+- **Claude Code:** a channel push. The message arrives as a `<channel source="hypernym">` event containing the
+  `<dropship-messages>` block, and the idle session starts a new turn. This only works when Claude was started with
+  the plugin as a channel, because it isn't on Anthropic's allowlist:
+  `claude --dangerously-load-development-channels plugin:hypernym@hypernym-nebula-pro` (accept the one-time
+  warning). Without that flag, mail still arrives with the session's next prompt.
+
+When you are woken, read and answer as usual (`dropship_read`, then `dropship_send`), then go idle. Do not start a
+wait loop.
+
 ## Mailbox limits and queued delivery
 
 A provider cooldown is not a lost friendship or an agent being offline. Check status for the provider reason,
