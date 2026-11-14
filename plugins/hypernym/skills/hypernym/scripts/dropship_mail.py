@@ -87,6 +87,17 @@ class MailboxDeferred(OSError):
 class Mail:
     """The mailbox side of the daemon. `c` is the dropship Courier (friends, inbox, logging, locks)."""
 
+    @staticmethod
+    def limits_file(base: str):
+        return storage.HOME / f"mailbox-limits-{hashlib.sha256(base.encode()).hexdigest()[:10]}.json"
+
+    def rebase(self, base: str) -> None:
+        """Switch to another mailbox server (the pointer moved): its own rate-limit state, a fresh stream."""
+        with self.limit_lock:
+            self.base = base.rstrip('/')
+            self.limit_path = self.limits_file(self.base)
+            self.limits = storage.load(self.limit_path, {})
+
     def __init__(self, c, base: str):
         self.c = c
         self.base = base.rstrip('/')
@@ -95,7 +106,7 @@ class Mail:
         journal = storage.load(self.journal_path, {})
         self.done = journal.get('done', {})
         self.parts = journal.get('parts', {})
-        self.limit_path = storage.HOME / 'mailbox-limits.json'
+        self.limit_path = self.limits_file(self.base)       # a pause belongs to the server that asked for it
         self.limits = storage.load(self.limit_path, {})
         self.presence_path = storage.HOME / 'mailbox-presence.json'
         self.presence = storage.load(self.presence_path, {})

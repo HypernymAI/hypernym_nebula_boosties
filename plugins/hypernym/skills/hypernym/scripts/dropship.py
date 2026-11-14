@@ -170,6 +170,9 @@ FALLBACK_MAILBOX = 'https://ntfy.sh'
 
 def mailbox_url(refresh: bool = False) -> str:
     configured = config()['mailbox']
+    # Up to 0.7.37 the old default (public ntfy.sh) was written into every config.json on save, so it means "auto".
+    if str(configured).rstrip('/') in ('https://ntfy.sh', 'http://ntfy.sh'):
+        configured = 'auto'
     if configured and configured != 'auto':
         return str(configured).rstrip('/')
     cached = load(MAILBOX_CACHE, {})
@@ -688,7 +691,7 @@ class Courier:
             u = mailbox_url(refresh=True)
             if self.mail is not None and u != self.mail.base:
                 log(f'mailbox moved: {self.mail.base} → {u}')
-                self.mail.base = u
+                self.mail.rebase(u)
                 stream = self.mail.stream
                 if stream is not None:
                     try:

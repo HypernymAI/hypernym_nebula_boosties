@@ -60,6 +60,10 @@ class MailboxPointerTests(unittest.TestCase):
         self.assertEqual(d.mailbox_url(), 'https://ntfy.example.org')
         self.assertEqual(ANSWER['hits'], 0)
 
+    def test_old_saved_default_means_auto(self):
+        d.save(d.CONFIG, {'mailbox': 'https://ntfy.sh'})      # written by <=0.7.37 on any config save
+        self.assertEqual(d.mailbox_url(), 'https://example-mailbox.proxy.runpod.net')
+
     def test_pointer_down_keeps_last_known(self):
         d.mailbox_url()
         ANSWER['code'], ANSWER['body'] = 500, b'oops'
