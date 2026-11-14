@@ -1129,7 +1129,8 @@ def send(to: str, body: str, sid: str = '') -> str:
     known = snapshot.get('sessions', {})
     if to in d and d[to].get('id') in snapshot.get('sessions_by_id', {}):
         known = dict(known, **{to: snapshot['sessions_by_id'][d[to]['id']]})
-    if to_s and to in known and known[to] and to_s not in known[to]:
+    fresh = to in d and d[to]['kind'] == 'lan'          # LAN beacons refresh every 3 s; mailbox pings every 2 min
+    if to_s and fresh and to in known and known[to] and to_s not in known[to] and len(known[to]) < 20:
         return f"#{to} has no session called {to_s}. Its sessions: {', '.join(known[to])}"
     targets = list(d) if to == 'all' else [to]
     if to != 'all' and to not in d:
@@ -1523,7 +1524,10 @@ def listen(sid: str) -> int:
             pass
 
 
-WAIT_RENEW_S = 23 * 3600 + 30 * 60
+WAIT_RENEW_S = int(os.environ['DROPSHIP_RENEW_S']) if 'DROPSHIP_RENEW_S' in os.environ else 23 * 3600 + 30 * 60
+# The MCP server sets DROPSHIP_RENEW_S=1500 when the host gave no progress token: Claude Code cancels a tool that is
+# silent for 30 minutes, and without a token there is no heartbeat to keep it alive. With a token the server sends a
+# progress heartbeat every minute and the wait sleeps for the full 23h30m — no model turns while idle.
 
 
 class WaitRenewal(Exception):
@@ -1531,7 +1535,7 @@ class WaitRenewal(Exception):
 
 
 def wait_for(sid: str, timeout: float = 0) -> list:
-    """Sleep locally until mail or one scheduled renewal after 23h30m."""
+    """Sleep locally until mail or one scheduled renewal (23h30m; 25 min where the host can't take heartbeats)."""
     borg = session_record(sid)['borg']
     silent = borg or timeout == 0
     deadline = time.monotonic() + (WAIT_RENEW_S if silent else max(1.0, min(timeout, 600.0)))
@@ -1541,7 +1545,7 @@ def wait_for(sid: str, timeout: float = 0) -> list:
     while True:
         if not config()['enabled'] or (borg and not session_record(sid)['borg']):
             return []
-        parent = os.environ.get('DROPSHIP_MCP_PID')
+        parent = os.environ['DROPSHIP_MCP_PID'] if 'DROPSHIP_MCP_PID' in os.environ else ''
         if parent and not pid_alive(int(parent)):
             return []
         try:
@@ -1845,7 +1849,7 @@ def main() -> int:
             try:
                 msgs = wait_for(sid, float(a[1]) if len(a) == 2 else 0) if sid else []
             except WaitRenewal:
-                print(f'SILENT_WAIT_RENEWAL: 23 hours 30 minutes elapsed. Call dropship_wait directly once '
+                print(f'SILENT_WAIT_RENEWAL: {WAIT_RENEW_S // 60} minutes elapsed. Call dropship_wait directly once '
                       f'(as_session \"{rec["name"]}\", timeout_seconds 0) to renew. No status commentary is needed.')
                 return 0
             print(as_context(msgs, me, rec['name']) if msgs else 'Waiting ended without a message. Stop here; do not retry automatically.')
@@ -1863,7 +1867,8 @@ def main() -> int:
         print(pair(a[1] if len(a) == 2 else ''))
         return 0
     if len(a) >= 3 and a[0] == 'send':
-        sid = calling_session()
+        under_tool = any(k in os.environ and os.environ[k] for k in ('DROPSHIP_MCP_PID', 'DROPSHIP_SESSION', 'DROPSHIP_AS'))
+        sid = calling_session() if under_tool else ''      # a script or terminal sends as the machine itself
         result = send(a[1], ' '.join(a[2:]), sid)
         print(result + ('. Call dropship_wait to wait for the answer.' if result.startswith('sent') else ''))
         return 0

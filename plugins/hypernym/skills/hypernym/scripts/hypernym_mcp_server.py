@@ -48,6 +48,8 @@ ELICIT_SEQ = [0]
 # else) and can be cancelled. Every other tool stays on the main loop (their approval dialogs read stdin there).
 OUT_LOCK = threading.Lock()
 RUNNING = {}                          # request id → the dropship subprocess serving it
+HEARTBEAT_S = float(os.environ['DROPSHIP_HEARTBEAT_S']) if 'DROPSHIP_HEARTBEAT_S' in os.environ else 60.0
+MCP_LOG = (Path(os.environ['DROPSHIP_HOME']) if 'DROPSHIP_HOME' in os.environ else Path.home() / '.hypernym' / 'dropship') / 'mcp.log'
 CALL = threading.local()
 
 DIR_PROP = {'type': 'string', 'description': 'Path of the git repo (default: the working directory).'}
@@ -235,6 +237,9 @@ def run_dropship(args: list, env: dict = None, timeout: int = 120) -> tuple:
     rid = CALL.id if hasattr(CALL, 'id') else None
     if rid is not None:
         RUNNING[rid] = p
+    token = CALL.progress if hasattr(CALL, 'progress') else None
+    if token is not None and args[:1] == ['wait']:
+        threading.Thread(target=heartbeat, args=(p, token), daemon=True).start()
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -248,18 +253,43 @@ def run_dropship(args: list, env: dict = None, timeout: int = 120) -> tuple:
     return (out + err).strip(), p.returncode != 0
 
 
+def heartbeat(p, token) -> None:
+    """Keep a long dropship_wait alive on Claude Code: a progress notification every HEARTBEAT_S resets the host's
+    MCP idle timer (30 min). Notifications go to the host, not the model — waiting costs no tokens."""
+    n = 0
+    while True:
+        try:
+            p.wait(timeout=HEARTBEAT_S)
+            return
+        except subprocess.TimeoutExpired:
+            n += 1
+            with OUT_LOCK:
+                sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'method': 'notifications/progress', 'params': {
+                    'progressToken': token, 'progress': n, 'message': 'waiting for Dropship mail'}}) + '\n')
+                sys.stdout.flush()
+
+
+def wait_log(line: str) -> None:
+    try:
+        MCP_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(MCP_LOG, 'a') as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+    except OSError:
+        pass
+
+
 def call_tool(name: str, arguments: dict) -> tuple:
     if name == 'dropship_local':
         action = arguments['action']
         args = [action]
         if action in ('nickname', 'clear-nickname'):
-            args.append(arguments.get('peer', ''))
+            args.append(arguments['peer'] if 'peer' in arguments else '')
         if action in ('name', 'nickname'):
-            args.append(arguments.get('name', ''))
+            args.append(arguments['name'] if 'name' in arguments else '')
         return run_dropship(args)
     if name == 'dropship_tracer':
-        env = {'DROPSHIP_AS': arguments['as_session']} if arguments.get('as_session') else {}
-        args = ['tracer', arguments['tracer']] if arguments.get('tracer') else ['tracer']
+        env = {'DROPSHIP_AS': arguments['as_session']} if 'as_session' in arguments and arguments['as_session'] else {}
+        args = ['tracer', arguments['tracer']] if 'tracer' in arguments and arguments['tracer'] else ['tracer']
         return run_dropship(args, env, timeout=200)
     if name == 'dropship_discover':
         return run_dropship(['discover'])
@@ -273,7 +303,12 @@ def call_tool(name: str, arguments: dict) -> tuple:
     if name in ('dropship_read', 'dropship_wait'):
         env = {'DROPSHIP_AS': arguments['as_session']} if 'as_session' in arguments and arguments['as_session'] else {}
         if name == 'dropship_wait':
-            t = min(600, max(0, int(arguments.get('timeout_seconds', 0))))
+            t = min(600, max(0, int(arguments['timeout_seconds']))) if 'timeout_seconds' in arguments else 0
+            has_token = hasattr(CALL, 'progress') and CALL.progress is not None
+            if not has_token:
+                env = dict(env, DROPSHIP_RENEW_S='1500')    # no heartbeat possible: renew before the 30-min idle cut
+            wait_log(f"wait as={env['DROPSHIP_AS'] if 'DROPSHIP_AS' in env else '-'} timeout={t} "
+                     f"progress_token={'yes' if has_token else 'no'} client={CLIENT['name'] if 'name' in CLIENT else '?'}")
             # The child enforces bounded waits; Borg owns its lifetime until mail/cancel.
             return run_dropship(['wait', str(t)], env, timeout=None)
         return run_dropship(['read', '--all'] if 'all' in arguments and arguments['all'] else ['read'], env)
@@ -486,9 +521,10 @@ def respond(message_id, result=None, error=None) -> None:
         sys.stdout.flush()
 
 
-def run_call(message_id, name: str, arguments: dict) -> None:
+def run_call(message_id, name: str, arguments: dict, progress=None) -> None:
     """A dropship tool call on its own thread."""
     CALL.id = message_id
+    CALL.progress = progress
     try:
         text, is_error = call_tool(name, arguments)
     except KeyError as e:
@@ -520,6 +556,7 @@ def handle(message: dict) -> None:
         if 'clientInfo' in params:
             if 'name' in params['clientInfo']:
                 CLIENT['codex'] = params['clientInfo']['name'] == 'codex-mcp-client'
+                CLIENT['name'] = str(params['clientInfo']['name'])[:40]
         version = SUPPORTED_PROTOCOLS[0]
         if 'protocolVersion' in params:
             if params['protocolVersion'] in SUPPORTED_PROTOCOLS:
@@ -537,7 +574,9 @@ def handle(message: dict) -> None:
         if 'arguments' in params:
             arguments = params['arguments']
         if 'name' in params and str(params['name']).startswith('dropship_'):
-            threading.Thread(target=run_call, args=(message_id, params['name'], arguments), daemon=True).start()
+            meta = params['_meta'] if '_meta' in params and isinstance(params['_meta'], dict) else {}
+            token = meta['progressToken'] if 'progressToken' in meta else None
+            threading.Thread(target=run_call, args=(message_id, params['name'], arguments, token), daemon=True).start()
             return
         try:
             text, is_error = call_tool(params['name'], arguments)

@@ -48,9 +48,21 @@ class SilentWaitTests(unittest.TestCase):
         self.read.assert_not_called()
 
     def test_mcp_has_no_short_subprocess_deadline(self):
+        # No progress token (no heartbeat possible): renew before Claude Code's 30-minute idle cut.
+        mcp.CALL.progress = None
         with patch.object(mcp, 'run_dropship', return_value=('ok', False)) as run:
             mcp.call_tool('dropship_wait', {'as_session': 'a', 'timeout_seconds': 60})
-            run.assert_called_once_with(['wait', '60'], {'DROPSHIP_AS': 'a'}, timeout=None)
+            run.assert_called_once_with(['wait', '60'], {'DROPSHIP_AS': 'a', 'DROPSHIP_RENEW_S': '1500'}, timeout=None)
+
+    def test_mcp_with_progress_token_keeps_the_long_wait(self):
+        # A progress token means the server heartbeats the host: no short renewal, no model turns while idle.
+        mcp.CALL.progress = 'tok'
+        try:
+            with patch.object(mcp, 'run_dropship', return_value=('ok', False)) as run:
+                mcp.call_tool('dropship_wait', {'as_session': 'a', 'timeout_seconds': 0})
+                run.assert_called_once_with(['wait', '0'], {'DROPSHIP_AS': 'a'}, timeout=None)
+        finally:
+            mcp.CALL.progress = None
 
 if __name__ == '__main__':
     unittest.main()

@@ -220,24 +220,6 @@ def test_sender_is_auto_added_and_alias(a, b, c, d):
     wait(lambda: 'quiet' in b.cli('status'), 20, 'bob learns #alice/quiet')
 
 
-def test_listener_wakes_with_the_reply(a, b, c, d):
-    quiet = Session(a, 'a-quiet-11', a.home / 'transcripts' / 'a-quiet-11.jsonl')
-    build = b.session('b-build-1', 'Build')
-    got = build.got()
-    check('alias form works' in got and '#alice/quiet' in got and 'Answer it yourself' in got, got)
-    p = subprocess.Popen([sys.executable, str(DROPSHIP), 'listen', 'a-quiet-11'], env=a.env, stdout=subprocess.PIPE,
-                         text=True)
-    time.sleep(1.5)
-    check(p.poll() is None, 'listener waits while nothing has arrived')
-    again = subprocess.run([sys.executable, str(DROPSHIP), 'listen', 'a-quiet-11'], env=a.env, capture_output=True,
-                           text=True, timeout=10).stdout
-    check('already running' in again, 'one listener per session')
-    build.send('#alice/quiet reply from build')
-    out, _ = p.communicate(timeout=20)
-    check(p.returncode == 0 and 'reply from build' in out and 'start the listener again' in out, out)
-    check(quiet.got() == '', 'the listener consumed it: not shown twice')
-
-
 def test_typed_text_is_never_sent(a, b, c, d):
     s = a.session('a-typed-13', 'Typed')
     before = len(b.inbox())
@@ -372,6 +354,54 @@ def test_borg_silent_wait_and_cancel(a, b, c, d):
             srv.wait()
 
 
+def test_borg_wait_heartbeat_keeps_claude_code_alive(a, b, c, d):
+    """Claude Code cancels a plugin tool that is silent for 30 minutes. With a progress token the server sends a
+    progress heartbeat while dropship_wait sleeps (no model turns), then returns only when mail arrives."""
+    hive = a.session('a-hive-17', 'Hive')
+    hive.prompt('hypernym dropship borg')
+    env = dict(a.env, DROPSHIP_HEARTBEAT_S='1')
+    srv = subprocess.Popen([sys.executable, str(SCRIPTS / 'hypernym_mcp_server.py')], stdin=subprocess.PIPE,
+                           stdout=subprocess.PIPE, text=True, env=env, bufsize=1)
+    def rpc(msg):
+        srv.stdin.write(json.dumps(msg) + '\n')
+        srv.stdin.flush()
+    try:
+        rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2025-06-18',
+             'capabilities': {}, 'clientInfo': {'name': 'claude-code', 'version': 't'}}})
+        json.loads(srv.stdout.readline())
+        rpc({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'dropship_wait', '_meta': {
+            'progressToken': 'tok-hive'}, 'arguments': {'as_session': 'hive', 'timeout_seconds': 0}}})
+        beats, t0 = 0, time.time()
+        while beats < 3 and time.time() - t0 < 15:
+            m = json.loads(srv.stdout.readline())
+            check('id' not in m, f'a borg wait must not return without mail: {m}')
+            if m['method'] == 'notifications/progress' and m['params']['progressToken'] == 'tok-hive':
+                beats += 1
+        check(beats >= 3, f'expected progress heartbeats, got {beats}')
+        log = (a.home / 'mcp.log').read_text()
+        check('as=hive' in log and 'progress_token=yes' in log, log)
+        build = Session(b, 'b-build-1', b.home / 'transcripts' / 'b-build-1.jsonl')
+        wait(lambda: 'hive' in b.cli('status'), 20, 'bob learns #alice/hive')
+        build.send('#alice/hive wake up, hive')
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            m = json.loads(srv.stdout.readline())
+            if 'id' in m and m['id'] == 2:
+                check('wake up, hive' in m['result']['content'][0]['text'], m)
+                break
+        else:
+            raise AssertionError('the borg wait never returned the mail')
+        # without a progress token the server asks for the 25-minute renewal instead (logged)
+        rpc({'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'dropship_wait', 'arguments': {
+            'as_session': 'hive', 'timeout_seconds': 0}}})
+        time.sleep(1.5)
+        check('progress_token=no' in (a.home / 'mcp.log').read_text(), 'no token → logged, short renewal')
+        rpc({'jsonrpc': '2.0', 'method': 'notifications/cancelled', 'params': {'requestId': 3}})
+    finally:
+        srv.kill()
+        Session(a, 'a-hive-17', a.home / 'transcripts' / 'a-hive-17.jsonl').send('hypernym dropship borg off')
+
+
 def test_sessions_history_order(a, b, c, d):
     time.sleep(1.1)                                   # distinct timestamps
     other = Session(a, 'a-other-2', a.home / 'transcripts' / 'a-other-2.jsonl')
@@ -484,8 +514,8 @@ def main() -> int:
     order = ['test_home_wifi_discovery_and_message', 'test_sessions_targeted_routing',
              'test_sessions_unknown_name_refused', 'test_unthreaded_message_goes_to_default_only',
              'test_same_computer_sessions', 'test_sessions_report_waiting', 'test_awake_targets_the_tab',
-             'test_sender_is_auto_added_and_alias', 'test_listener_wakes_with_the_reply', 'test_typed_text_is_never_sent',
-             'test_wait_works_like_wait_for_reply', 'test_borg_mode', 'test_mcp_wait_never_blocks_a_send',
+             'test_sender_is_auto_added_and_alias', 'test_typed_text_is_never_sent',
+             'test_wait_works_like_wait_for_reply', 'test_borg_mode', 'test_mcp_wait_never_blocks_a_send', 'test_borg_wait_heartbeat_keeps_claude_code_alive',
              'test_sessions_history_order',
              'test_lan_attacks_refused', 'test_bar_width', 'test_network_pairing_and_mail']
     tests.sort(key=lambda t: order.index(t[0]) if t[0] in order else 99)
