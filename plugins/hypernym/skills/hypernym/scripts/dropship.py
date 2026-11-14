@@ -165,6 +165,7 @@ def config() -> dict:
 POINTER = 'https://mailbox-dropship.vercel.app/dropship/mailbox.json'
 MAILBOX_CACHE = HOME / 'mailbox.json'
 MAILBOX_RECHECK_S = 6 * 3600
+MAILBOX_HEALTH_S = float(os.environ['DROPSHIP_MAILBOX_HEALTH_S']) if 'DROPSHIP_MAILBOX_HEALTH_S' in os.environ else 300.0
 FALLBACK_MAILBOX = 'https://ntfy.sh'
 
 
@@ -686,8 +687,22 @@ class Courier:
             threading.Thread(target=t, daemon=True).start()
 
     def mailbox_watch(self):
-        """Follow the mailbox pointer: if Hypernym moves the mailbox, switch over live (the stream reconnects)."""
-        while not self.stop.wait(MAILBOX_RECHECK_S):
+        """Follow the mailbox pointer: every MAILBOX_HEALTH_S check the current mailbox; if it is down (e.g. Hypernym
+        redeployed it), or MAILBOX_RECHECK_S has passed, reread the pointer and switch over live (stream reconnects)."""
+        last_pointer = time.time()
+        while not self.stop.wait(MAILBOX_HEALTH_S):
+            healthy = True
+            if self.mail is not None and config()['mailbox'] in ('auto', 'https://ntfy.sh', 'http://ntfy.sh'):
+                try:
+                    req = urllib.request.Request(f'{self.mail.base}/v1/health',
+                                                 headers={'User-Agent': 'dropship/1 (Nebula Pro)'})
+                    with urllib.request.urlopen(req, timeout=10) as r:
+                        healthy = r.status == 200
+                except OSError:
+                    healthy = False
+            if healthy and time.time() - last_pointer < MAILBOX_RECHECK_S:
+                continue
+            last_pointer = time.time()
             u = mailbox_url(refresh=True)
             if self.mail is not None and u != self.mail.base:
                 log(f'mailbox moved: {self.mail.base} → {u}')

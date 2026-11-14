@@ -74,6 +74,28 @@ class MailboxPointerTests(unittest.TestCase):
         ANSWER['code'], ANSWER['body'] = 500, b'oops'
         self.assertEqual(d.mailbox_url(), d.FALLBACK_MAILBOX)
 
+    def test_courier_moves_when_its_mailbox_goes_down(self):
+        # A redeployed mailbox: the old address stops answering; within one health check the courier rereads the
+        # pointer and switches (no waiting for the 6 h recheck).
+        ANSWER['body'] = b'{"mailbox": "https://new-mailbox.proxy.runpod.net"}'
+        d.MAILBOX_HEALTH_S = 0.2
+
+        class FakeMail:
+            base, stream = 'http://127.0.0.1:9', None          # nothing listens on port 9: the old pod is gone
+            def rebase(self, u):
+                self.base = u
+
+        class FakeCourier:
+            mail, stop = FakeMail(), threading.Event()
+        c = FakeCourier()
+        t = threading.Thread(target=d.Courier.mailbox_watch, args=(c,), daemon=True)
+        t.start()
+        deadline = time.time() + 5
+        while time.time() < deadline and c.mail.base != 'https://new-mailbox.proxy.runpod.net':
+            time.sleep(0.1)
+        c.stop.set()
+        self.assertEqual(c.mail.base, 'https://new-mailbox.proxy.runpod.net')
+
     def test_non_https_pointer_refused(self):
         ANSWER['body'] = b'{"mailbox": "http://evil.example"}'
         self.assertEqual(d.mailbox_url(), d.FALLBACK_MAILBOX)
