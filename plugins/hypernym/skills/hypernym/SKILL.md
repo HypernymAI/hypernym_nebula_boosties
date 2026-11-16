@@ -50,6 +50,16 @@ last step requires the user. Do not invent `hypernym_update` or an unsupported `
 the cache by hand, or uninstall/reinstall as a routine workaround. An unpublished development version cannot be
 downloaded from GitHub; report that fact without publishing or downgrading it automatically.
 
+## Recovering a stale update skill
+
+If a session interprets `hypernym update` as analysis help (for example a cache path containing `0.7.33`),
+its loaded skill predates this workflow. Do not diagnose Zephyr or refresh analysis packages to fix that.
+Use the current client's plugin-manager sequence above directly, verify the installed manifest, then reconnect
+that session. A newly published skill or hook cannot rewrite an already-loaded old skill before this first update.
+For Claude, `/hypernym:hypernym-update` is an explicit update command once this version is installed.
+The prompt hook also routes an exact `hypernym update` request here; it supplies instructions only and never
+runs an installer, accepts terms, or changes permissions itself.
+
 ## In Codex: use the MCP tools
 
 Codex runs your shell commands in a sandbox without network and without write access to `~/.hypernym`, so the script
