@@ -178,6 +178,12 @@ TOOLS = [
                     "each other from anywhere, end-to-end encrypted. Show the output as-is.",
      'inputSchema': {'type': 'object', 'properties': {
          'code': {'type': 'string', 'description': 'The code the other person gave you; omit to start a new pairing.'}}}},
+    {'name': 'hypernym_hot_update',
+     'description': "Update Hypernym in EVERY client on this computer (Claude Code and Codex, through their own plugin "
+                    "managers), bring all open windows onto the new code WITHOUT restarting them, and restart the "
+                    "Dropship courier. Use for \"hypernym update\" / \"hypernym hot update\", or before a long task. "
+                    "Then continue whatever you were doing.",
+     'inputSchema': {'type': 'object', 'properties': {}}},
     {'name': 'dropship_switch',
      'description': "Turn Dropship on or off on this machine (off also stops its background courier).",
      'inputSchema': {'type': 'object', 'required': ['on'], 'properties': {'on': {'type': 'boolean'}}}},
@@ -380,6 +386,8 @@ def call_tool(name: str, arguments: dict) -> tuple:
         return run_dropship(['read', '--all'] if 'all' in arguments and arguments['all'] else ['read'], env)
     if name == 'dropship_pair':
         return run_dropship(['pair', arguments['code']] if 'code' in arguments and arguments['code'] else ['pair'])
+    if name == 'hypernym_hot_update':
+        return run_dropship(['hot-update'], timeout=900)
     if name == 'dropship_switch':
         return run_dropship(['on' if arguments['on'] else 'off'])
     if name == 'hypernym_status':

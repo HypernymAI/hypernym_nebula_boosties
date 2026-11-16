@@ -50,6 +50,15 @@ last step requires the user. Do not invent `hypernym_update` or an unsupported `
 the cache by hand, or uninstall/reinstall as a routine workaround. An unpublished development version cannot be
 downloaded from GitHub; report that fact without publishing or downgrading it automatically.
 
+## Hot update (preferred): every client, no restarts
+
+`hypernym update` means: call `hypernym_hot_update`, or run
+`python3 <this skill>/scripts/dropship.py hot-update` without the tool. It updates Hypernym in every client on
+this computer through their own plugin managers (Claude Code and Codex). It then copies the newest scripts into
+every older cached copy, so open windows run the new code from their next prompt or tool call without restarting,
+and it restarts the Dropship courier. Report its output and carry on with whatever task was running. Only rare
+changes to the hook list or to how the MCP server starts need a fresh window.
+
 ## Recovering a stale update skill
 
 If a session interprets `hypernym update` as analysis help (for example a cache path containing `0.7.33`),

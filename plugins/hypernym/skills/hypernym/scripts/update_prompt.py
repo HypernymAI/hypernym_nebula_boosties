@@ -14,7 +14,10 @@ def response(event):
         return None
     skill = Path(__file__).resolve().parents[1] / 'SKILL.md'
     context = (
-        'The user requested a Hypernym PLUGIN UPDATE. Read the update workflow in '
+        'The user requested a Hypernym PLUGIN UPDATE. Call the hypernym_hot_update tool (no tool: run python3 '
+        + str(Path(__file__).resolve().parent / 'dropship.py') + ' hot-update): it updates every client on this '
+        'computer, Claude Code and Codex, brings open windows onto the new code without restarting them, and restarts '
+        'the courier. Report its output, then continue any task that was in progress. If that is unavailable, read the update workflow in '
         + str(skill) + ' and execute it for the current client using its supported plugin manager. '
         'Inspect the installed source/scope first, preserve local changes and credentials, refresh the marketplace, '
         'update the installed plugin, and verify the installed version. A marketplace refresh alone is not completion. '

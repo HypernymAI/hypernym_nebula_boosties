@@ -2016,6 +2016,95 @@ def friends_text() -> str:
     return 'Dropship friends:\n' + ('\n'.join(rows) if rows else '(none)')
 
 
+# ---------------------------------------------------------------------------------------------------- hot update
+# One command, every client on this computer, no restarts: update Hypernym through each installed client's own plugin
+# manager (Claude Code, Codex), then copy the newest scripts into EVERY older cached copy — open windows run their
+# hooks and Dropship tools from the copy they started with, so they pick the new code up on their next prompt / call —
+# and restart the courier on the new code. Meant to be run before (or in the middle of) a long task, which continues.
+HOT_FILES_GLOB = ('skills/hypernym/scripts/*.py', 'skills/*/SKILL.md')
+
+
+def plugin_caches() -> list:
+    """Every cached copy of the hypernym plugin, Claude Code's and Codex's."""
+    roots = [Path(os.environ['DROPSHIP_PLUGIN_CACHES'])] if 'DROPSHIP_PLUGIN_CACHES' in os.environ else [
+        (Path(os.environ['CLAUDE_CONFIG_DIR']) if 'CLAUDE_CONFIG_DIR' in os.environ else Path.home() / '.claude')
+        / 'plugins' / 'cache',
+        (Path(os.environ['CODEX_HOME']) if 'CODEX_HOME' in os.environ else Path.home() / '.codex') / 'plugins' / 'cache']
+    out = []
+    for root in roots:
+        for d in sorted(root.glob('*/hypernym/*')):
+            if (d / 'skills' / 'hypernym' / 'scripts' / 'dropship.py').exists():
+                out.append(d)
+    return out
+
+
+def cache_version(d: Path) -> tuple:
+    for m in ('.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'plugin.json'):
+        try:
+            return tuple(int(x) for x in json.loads((d / m).read_text())['version'].split('.'))
+        except (OSError, ValueError, KeyError):
+            continue
+    try:
+        return tuple(int(x) for x in d.name.split('.'))
+    except ValueError:
+        return (0,)
+
+
+def hot_update(managers: bool = True) -> str:
+    lines = []
+    if managers:
+        steps = []
+        claude = shutil.which('claude') or str(Path.home() / '.local' / 'bin' / 'claude')
+        if Path(claude).exists():
+            steps += [[claude, 'plugin', 'marketplace', 'update', 'hypernym-nebula-pro'],
+                      [claude, 'plugin', 'update', 'hypernym@hypernym-nebula-pro']]
+        codex = codex_bin()
+        if codex and any('/.codex/' in str(d) for d in plugin_caches()):
+            steps += [[codex, 'plugin', 'marketplace', 'upgrade', 'hypernym-nebula-pro'],
+                      [codex, 'plugin', 'add', 'hypernym@hypernym-nebula-pro']]
+        for argv in steps:
+            try:
+                r = subprocess.run(argv, capture_output=True, text=True, timeout=180, creationflags=NO_WINDOW,
+                                   stdin=subprocess.DEVNULL)
+                last = (r.stdout + r.stderr).strip().splitlines()
+                lines.append(f"{'ok ' if r.returncode == 0 else 'FAILED '}{Path(argv[0]).name} {' '.join(argv[1:])}"
+                             + (f' — {last[-1][:140]}' if last else ''))
+            except (OSError, subprocess.SubprocessError) as e:
+                lines.append(f'FAILED {Path(argv[0]).name} {" ".join(argv[1:])} — {e}')
+    caches = plugin_caches()
+    if not caches:
+        return '\n'.join(lines + ['No cached hypernym plugin found.'])
+    newest = max(caches, key=cache_version)
+    synced = 0
+    for d in caches:
+        if d == newest:
+            continue
+        changed = False
+        for pattern in HOT_FILES_GLOB:
+            for src in newest.glob(pattern):
+                dst = d / src.relative_to(newest)
+                if not dst.parent.exists():
+                    continue
+                if not dst.exists() or dst.read_bytes() != src.read_bytes():
+                    tmp = dst.with_name(f'{dst.name}.{os.getpid()}.tmp')
+                    shutil.copyfile(src, tmp)
+                    tmp.replace(dst)
+                    changed = True
+        synced += changed
+    newest_v = '.'.join(map(str, cache_version(newest)))
+    lines.append(f'newest {newest_v} ({newest}); brought {synced} older cached copies onto it '
+                 f'({len(caches)} copies in all, Claude Code and Codex)')
+    if running():
+        stop_daemon()
+    if config()['enabled']:
+        script = newest / 'skills' / 'hypernym' / 'scripts' / 'dropship.py'
+        _spawn([sys.executable, str(script), 'daemon'])
+        lines.append('courier restarted on the new code')
+    lines.append('Open windows now use the new scripts from their next prompt / tool call — no restart. Only changes '
+                 'to hook lists or MCP server startup (rare) need a fresh window. Continue your task.')
+    return 'Hypernym hot update:\n' + '\n'.join('  ' + x for x in lines)
+
+
 def session_for_cwd(cwd: str) -> str:
     """The session most recently prompted in this folder (the MCP server runs in its session's folder)."""
     best = max(((r['seen'], sid) for sid, r in all_sessions().items() if r['cwd'] == cwd), default=(0, ''))
@@ -2182,6 +2271,9 @@ def main() -> int:
         return 0
     if a == ['friends']:
         print(friends_text())
+        return 0
+    if a in (['hot-update'], ['hot-update', '--sync-only']):
+        print(hot_update(managers=a == ['hot-update']))
         return 0
     if len(a) >= 2 and a[0] in ('scope', 'trust', 'block', 'unblock'):
         if a[0] == 'scope':
