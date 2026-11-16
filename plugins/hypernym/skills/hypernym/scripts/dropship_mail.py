@@ -302,7 +302,7 @@ class Mail:
         got['chunks'][str(i)] = str(env['body'])
         if len(got['chunks']) == n:
             self.c.deliver(self.c.friends[friend['id']]['name'], ''.join(got['chunks'][str(k)] for k in range(n)),
-                           'mailbox', float(env['ts']), got['to_s'], got['from_s'])
+                           'mailbox', float(env['ts']), got['to_s'], got['from_s'], friend['id'])
             self.done[key] = time.time()
             del self.parts[key]
         self.checkpoint()

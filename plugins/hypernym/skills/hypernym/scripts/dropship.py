@@ -151,7 +151,7 @@ def save(p: Path, data) -> None:
     tmp.replace(p)
 
 
-WAKE_CHECK_S, WAKE_GAP_S, WAKE_TRIES = 2.0, 30.0, 3
+WAKE_CHECK_S, WAKE_GAP_S, WAKE_TRIES = 2.0, 120.0, 2
 
 
 def codex_bin() -> str:
@@ -255,6 +255,35 @@ def identity() -> dict:
 #                                           and pings/status tell that friend only the scoped session names.
 #   no 'scope' key                        → full trust (existing friends: your own computers, Benito…)
 # A friend paired through a tracer is scoped to the tracer's session automatically.
+class friends_lock:
+    """Cross-process lock for friends.json read-modify-write (courier saves vs CLI scope/trust/block)."""
+    def __enter__(self):
+        _private_dir()
+        self.fh = open(HOME / 'friends.lock', 'a+')
+        try:
+            if IS_WIN:
+                import msvcrt
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fh, fcntl.LOCK_EX)
+        except OSError:
+            pass
+        return self
+
+    def __exit__(self, *_a):
+        try:
+            if IS_WIN:
+                import msvcrt
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fh, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        self.fh.close()
+
+
 def friend_policy(pid: str) -> dict:
     f = load(FRIENDS, {})
     f = f[pid] if pid in f else {}
@@ -286,6 +315,11 @@ def sessions_for(pid: str) -> list:
 
 
 def set_policy(peer: str, scope=None, blocked=None, trust: bool = False) -> str:
+    with friends_lock():
+        return _set_policy(peer, scope, blocked, trust)
+
+
+def _set_policy(peer: str, scope=None, blocked=None, trust: bool = False) -> str:
     friends = load(FRIENDS, {})
     pid = peer if peer in friends else friend_id(peer.lstrip('#'))
     if not pid:
@@ -721,33 +755,43 @@ class Courier:
         with self.lock:
             return pid in self.peers and time.time() - self.peers[pid]['last_seen'] < PEER_GONE_S
 
-    def deliver(self, name: str, body: str, via: str, ts: float, to_s: str = '', from_s: str = '') -> None:
+    def deliver(self, name: str, body: str, via: str, ts: float, to_s: str = '', from_s: str = '',
+                pid: str = '') -> None:
+        """`pid` is the AUTHENTICATED machine id of the sender (LAN signature / mailbox Box). Access policy is decided
+        on it alone, before anything else — tracer control, inbox, wake."""
         body = clean(body)
         to_s = to_s if SESSION_RE.match(to_s or '-') else ''
         from_s = from_s if SESSION_RE.match(from_s or '-') else ''
-        pid = friend_id(name)
-        pol = friend_policy(pid) if pid else {'blocked': False, 'scope': None}
+        friends = load(FRIENDS, {})
+        if not pid or pid not in friends:
+            log(f'dropped message from unauthenticated/unknown peer {name!r} ({pid or "no id"})')
+            return
+        pol = friend_policy(pid)
         if pol['blocked']:
             log(f'dropped message from blocked friend {name} ({pid})')
             return
+        owner = ''
+        if pol['scope'] is not None:
+            if to_s:                                    # an explicit target must BE one of its sessions (name/alias)
+                hits = [sid for sid in pol['scope'] if session_record(sid)['name'] == to_s or to_s in
+                        (session_record(sid)['aliases'] if 'aliases' in session_record(sid) else [])]
+                if not hits:
+                    log(f'dropped message from scoped friend {name} ({pid}) to {to_s}: outside its scope')
+                    return
+                owner = hits[0]
+            elif pol['scope']:
+                owner = pol['scope'][0]                 # bare-machine mail stays inside the scope
+            else:
+                log(f'dropped message from scoped friend {name} ({pid}): empty scope')
+                return
         from dropship_tracer import receive
         if receive(self, name, body, to_s, from_s):
             return
         if body:
-            owner = owner_of(to_s, name)
-            if pol['scope'] is not None and owner not in pol['scope']:
-                named = to_s and any(session_record(s)['name'] == to_s or
-                                     to_s in (session_record(s)['aliases'] if 'aliases' in session_record(s) else [])
-                                     for s in pol['scope'])
-                if to_s and not named:
-                    log(f'dropped message from scoped friend {name} ({pid}) to {to_s}: outside its scope')
-                    return
-                owner = pol['scope'][0] if pol['scope'] else ''   # bare-machine mail goes to its scope, never wider
-                if not owner:
-                    log(f'dropped message from scoped friend {name} ({pid}): empty scope')
-                    return
-            append_inbox({'dir': 'in', 'via': via, 'from': name, 'from_s': from_s, 'to': self.me['name'], 'to_s': to_s,
-                          'owner': owner, 'ts': time.time(), 'body': body})
+            if not owner:
+                owner = owner_of(to_s, name)
+            append_inbox({'dir': 'in', 'via': via, 'from': name, 'from_id': pid, 'from_s': from_s, 'to': self.me['name'],
+                          'to_s': to_s, 'owner': owner, 'ts': time.time(), 'body': body})
             log_talk(owner, f'{name}/{from_s}' if from_s else name, 'in')
 
     # -- wake idle Codex sessions when mail arrives for them (no dropship_wait loop needed)
@@ -757,7 +801,9 @@ class Courier:
         or right after the current one). One wake per WAKE_GAP_S per session, at most WAKE_TRIES while that mail stays
         unread; a courier restart re-checks, so nothing is lost. The wake text is a fixed notice — peer text never goes
         into the queued prompt; the session reads it with dropship_read, wrapped as data."""
-        tried = {}                                        # sid → (newest owned inbox line, tries, last wake time)
+        # sid → [newest owned inbox line, tries, last wake time]; kept on disk so a courier restart never re-wakes for
+        # mail it already woke a session about (a busy Codex thread runs the queued wake later — don't stack more).
+        tried = {k: tuple(v) for k, v in load(HOME / 'wakes.json', {}).items()}
         while not self.stop.wait(WAKE_CHECK_S):
             if not config()['enabled'] or not config()['wake_codex']:
                 continue
@@ -769,7 +815,8 @@ class Courier:
                 if not is_codex(r):
                     continue
                 cursor = r['n'] if r['n'] is not None else (msgs[-1]['n'] if msgs else 0)
-                mine = [m for m in msgs if m['dir'] == 'in' and m['n'] > cursor and 'owner' in m and m['owner'] == sid]
+                mine = [m for m in msgs if m['dir'] == 'in' and m['n'] > cursor and 'owner' in m and m['owner'] == sid
+                        and allowed_for(m, sid)]
                 if not mine:
                     tried.pop(sid, None)
                     continue
@@ -792,6 +839,7 @@ class Courier:
                 except (OSError, subprocess.SubprocessError) as e:
                     log(f"wake codex {r['name']} failed: {e}")
                 tried[sid] = (newest, tries + 1, time.time())
+                save(HOME / 'wakes.json', {k: list(v) for k, v in tried.items()})
 
     def add_friend(self, card: dict, how: str) -> str:
         """A friend from pairing: {id, name, box, pub}. Returns its name (made unique among friends)."""
@@ -804,6 +852,14 @@ class Courier:
                 raise ValueError('Peer keys changed; existing trust was preserved.')
             self.friends[pid] = dict(old, name=name, advertised_name=name, pub=str(card['pub']),
                                      box=str(card['box']), how=how, since=old.get('since', time.time()))
+            # Paired through THIS computer's tracer: confined to the tracer's session from the first moment — the
+            # scope is written in the same save as the friendship, so no thread ever sees it with full trust.
+            inv, job = load(HOME / 'tracer-invitation.json', {}), load(PAIRING, {})
+            if not old and isinstance(inv, dict) and isinstance(job, dict) and 'code' in inv and 'sid' in inv \
+                    and 'code' in job and inv['code'] == job['code']:
+                self.friends[pid]['scope'] = [inv['sid']]
+                self.friends[pid]['scoped_by'] = 'tracer'
+                log(f"friend {name} ({pid}) paired by tracer: scoped to session {inv['sid']}")
             self.refresh_names()
             name = self.friends[pid]['name']
         log(f'paired with {name} ({pid})')
@@ -816,7 +872,21 @@ class Courier:
             self.friends[pid]['name'] = name
             if pid in self.peers:
                 self.peers[pid]['name'] = name
-        save(FRIENDS, self.friends)
+        self.save_friends()
+
+    def save_friends(self):
+        """Write the in-memory friends without ever overwriting access policy set elsewhere (scope / block are owned
+        by friends.json on disk: a CLI `scope`/`trust`/`block` must survive the courier's next save)."""
+        with friends_lock():
+            disk = load(FRIENDS, {})
+            for pid, f in self.friends.items():
+                if pid in disk:
+                    for k in ('scope', 'blocked', 'scoped_by'):
+                        if k in disk[pid]:
+                            f[k] = disk[pid][k]
+                        else:
+                            f.pop(k, None)
+            save(FRIENDS, self.friends)
 
     def peer_renamed(self, pid, name):
         if isinstance(name, str) and NAME_RE.fullmatch(name):
@@ -1012,7 +1082,10 @@ class Courier:
                     'pub': self.me['pub']}
             if self.mail is not None:
                 card['box'] = self.me['box_pub']          # so friends made here keep talking when apart
-            card['sessions'] = advertised_sessions()
+            # A LAN beacon reaches everyone on the network, so it can't be filtered per peer: while any friend is
+            # scoped, leave the session list out entirely (mailbox pings stay per-friend filtered).
+            scoped = any('scope' in f or ('blocked' in f and f['blocked']) for f in load(FRIENDS, {}).values())
+            card['sessions'] = [] if scoped else advertised_sessions()
             b = json.dumps(card).encode()
             for dst in (MCAST, '255.255.255.255'):
                 try:
@@ -1056,11 +1129,11 @@ class Courier:
                 self.friends[pid] = {'name': name, 'pub': pub, 'how': 'home wi-fi', 'since': time.time()}
                 if box:
                     self.friends[pid]['box'] = box
-                save(FRIENDS, self.friends)
+                self.save_friends()
                 log(f'new friend {name} ({pid}) at {addr}')
             elif box and 'box' not in known:
                 known['box'] = box
-                save(FRIENDS, self.friends)
+                self.save_friends()
             self.friends[pid]['advertised_name'] = name
             self.refresh_names()
             name = self.friends[pid]['name']
@@ -1100,7 +1173,7 @@ class Courier:
         body = clean(msg['body'])
         if not body:
             return 400, 'empty'
-        self.deliver(peer['name'], body, 'lan', now, msg['to_s'], msg['from_s'])
+        self.deliver(peer['name'], body, 'lan', now, msg['to_s'], msg['from_s'], msg['from'])
         return 200, 'ok'
 
     # -- distant relays
@@ -1428,6 +1501,20 @@ def send(to: str, body: str, sid: str = '') -> str:
     return f"sent to {', '.join('#' + n for n in sent)}"
 
 
+def allowed_for(m: dict, sid: str) -> bool:
+    """Current-policy check at the moment mail is CONSUMED (read, wait, prompt hook, channel push, Codex wake) — so a
+    scope/block change applies instantly to mail already in the inbox, with no cross-process inbox rewrite."""
+    if m['via'] == 'local':
+        return True                                     # another session on this same computer
+    pid = m['from_id'] if 'from_id' in m and m['from_id'] else friend_id(m['from'])
+    if not pid:
+        return False                                    # legacy/unattributable remote mail: fail closed
+    pol = friend_policy(pid)
+    if pol['blocked']:
+        return False
+    return pol['scope'] is None or sid in pol['scope']
+
+
 def unread_for(session_id: str) -> list:
     """Messages routed to THIS session (owner) since it last looked. Never other sessions' messages, never held ones."""
     r = session_record(session_id)
@@ -1437,7 +1524,9 @@ def unread_for(session_id: str) -> list:
     save(SESSIONS / f'{_sid(session_id)}.json', r)
     if last is None:                      # a new session starts at the end: only what arrives from now on
         return []
-    return [m for m in msgs if m['n'] > last and m['dir'] == 'in' and 'owner' in m and m['owner'] == _sid(session_id)]
+    sid = _sid(session_id)
+    return [m for m in msgs if m['n'] > last and m['dir'] == 'in' and 'owner' in m and m['owner'] == sid
+            and allowed_for(m, sid)]
 
 
 def addr(machine: str, session: str) -> str:

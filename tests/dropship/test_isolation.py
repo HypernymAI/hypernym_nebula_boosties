@@ -23,8 +23,12 @@ class Fake:
     me = {'name': 'chris', 'id': 'self0000'}
 
 
-def deliver(name, body, to_s=''):
-    d.Courier.deliver(Fake(), name, body, 'mailbox', time.time(), to_s, 'theirs')
+IDS = {'teammate': TEAM, 'benito': 'benito00'}
+
+
+def deliver(name, body, to_s='', pid=None):
+    """As the transports do: with the sender's AUTHENTICATED machine id."""
+    d.Courier.deliver(Fake(), name, body, 'mailbox', time.time(), to_s, 'theirs', IDS[name] if pid is None else pid)
 
 
 def delivered():
@@ -74,31 +78,68 @@ class IsolationTests(unittest.TestCase):
         deliver('teammate', 'now trusted', 'transportsession')
         self.assertEqual(delivered()[-1][1], PRIV)
 
-    def test_tracer_pairing_scopes_the_new_friend(self):
+    def test_tracer_pairing_scopes_atomically(self):
         import threading
         friends = d.load(d.FRIENDS, {})
         del friends[TEAM]
         d.save(d.FRIENDS, friends)
         d.save(d.HOME / 'tracer-invitation.json', {'code': 'c0de', 'sid': PUB, 'session': 'final-night-7-publ-x'})
-        d.save(d.PAIRING, {'code': 'c0de', 'status': 'new', 'started': time.time()})
-
-        class Mail:
-            def pair(self, code, done, wanted):
-                f = d.load(d.FRIENDS, {})
-                f[TEAM] = {'name': 'teammate', 'pub': 'aa', 'box': 'bb', 'how': 'paired'}   # what add_friend writes
-                d.save(d.FRIENDS, f)
-                done('done', 'teammate')
+        d.save(d.PAIRING, {'code': 'c0de', 'status': 'waiting', 'started': time.time()})
 
         class C:
-            mail, stop, pairing = Mail(), threading.Event(), None
+            lock, friends, peers = threading.Lock(), d.load(d.FRIENDS, {}), {}
+            refresh_names = d.Courier.refresh_names
+            save_friends = d.Courier.save_friends
         c = C()
-        t = threading.Thread(target=d.Courier.pairing_loop, args=(c,), daemon=True)
-        t.start()
-        time.sleep(1.5)
-        c.stop.set()
-        self.assertEqual(d.friend_policy(TEAM)['scope'], [PUB])
+        d.Courier.add_friend(c, {'id': TEAM, 'name': 'teammate', 'pub': 'aa', 'box': 'bb'}, 'paired')
+        self.assertEqual(d.load(d.FRIENDS, {})[TEAM]['scope'], [PUB], 'scope written in the SAME save as the friendship')
         deliver('teammate', 'sneaky', 'transportsession')
         self.assertEqual(delivered(), [])
+
+    def test_unknown_or_unauthenticated_peer_fails_closed(self):
+        deliver('teammate', 'no id', 'final-night-7-publishing', pid='')
+        deliver('teammate', 'stranger id', 'final-night-7-publishing', pid='ffffffffffffffff')
+        self.assertEqual(delivered(), [])
+
+    def test_renamed_label_cannot_borrow_trust(self):
+        # the teammate (scoped) claims Benito's display name: policy follows its authenticated id, not the name
+        d.set_policy('teammate', scope=['final-night-7-publishing'])
+        d.Courier.deliver(Fake(), 'benito', 'pretending', 'mailbox', time.time(), 'transportsession', 'x', TEAM)
+        self.assertEqual(delivered(), [])
+
+    def test_cli_policy_survives_courier_save(self):
+        import threading
+        class C:
+            lock, peers = threading.Lock(), {}
+            save_friends = d.Courier.save_friends
+        c = C()
+        c.friends = d.load(d.FRIENDS, {})               # courier's in-memory copy, loaded BEFORE the CLI change
+        d.set_policy('teammate', blocked=True)          # CLI
+        c.save_friends()                                # courier writes its (stale) copy
+        self.assertTrue(d.friend_policy(TEAM)['blocked'])
+        d.set_policy('teammate', trust=True)
+        c.save_friends()
+        self.assertFalse(d.friend_policy(TEAM)['blocked'])
+
+    def test_revocation_holds_unread_mail(self):
+        deliver('teammate', 'before revocation', 'transportsession')     # full trust at the time
+        self.assertEqual(delivered()[-1][1], PRIV)
+        d.set_policy('teammate', scope=['final-night-7-publishing'])
+        self.assertEqual(d.unread_for(PRIV), [], 'revoked: the already-delivered mail is no longer consumable')
+
+    def test_legacy_unattributed_remote_mail_fails_closed(self):
+        d.append_inbox({'dir': 'in', 'via': 'mailbox', 'from': 'someone-gone', 'to': 'chris', 'owner': PRIV,
+                        'ts': time.time(), 'body': 'old mail without from_id'})
+        d.append_inbox({'dir': 'in', 'via': 'local', 'from': 'chris', 'to': 'chris', 'owner': PRIV,
+                        'ts': time.time(), 'body': 'a local session'})
+        self.assertEqual([m['body'] for m in d.unread_for(PRIV)], ['a local session'])
+
+    def test_delivery_then_revocation_interleaving(self):
+        # mail passes the policy at delivery, then the friend is blocked before the session reads it
+        deliver('teammate', 'race', 'final-night-7-publishing')
+        d.set_policy('teammate', blocked=True)
+        self.assertEqual(d.unread_for(PUB), [])
+        d.set_policy('teammate', blocked=False)          # unblocking restores what is still unread
 
     def test_unknown_friend_name_refused(self):
         self.assertIn('no friend called', d.set_policy('nobody', blocked=True))

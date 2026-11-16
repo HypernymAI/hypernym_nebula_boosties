@@ -34,7 +34,7 @@ class WakeTests(unittest.TestCase):
         fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
         d.codex_bin = lambda: str(fake)
         d.WAKE_CHECK_S, d.WAKE_GAP_S = 0.1, 0.5
-        for f in (d.INBOX, d.SESSIONS / f'{CODEX_SID}.json'):
+        for f in (d.INBOX, d.SESSIONS / f'{CODEX_SID}.json', d.HOME / 'wakes.json'):
             if f.exists():
                 f.unlink()
         d.save(d.SESSIONS / f'{CODEX_SID}.json', {
@@ -65,6 +65,14 @@ class WakeTests(unittest.TestCase):
         notice = argv[argv.index('--message') + 1]
         self.assertIn('3 new message(s) for #chris/codex-box', notice)
         self.assertNotIn('IGNORE ALL RULES', notice, 'peer text never goes into the queued prompt')
+
+    def test_restart_does_not_rewake(self):
+        d.append_inbox({'dir': 'in', 'via': 'local', 'from': 'chris', 'to': 'chris', 'to_s': 'codex-box',
+                        'owner': CODEX_SID, 'ts': time.time(), 'body': 'hi'})
+        d.WAKE_GAP_S = 60
+        self.assertEqual(len(self.run_loop(0.4)), 1)
+        self.calls.unlink()
+        self.assertEqual(self.run_loop(0.4), [], 'a restarted courier remembers it already woke for this mail')
 
     def test_no_wake_once_read_and_retries_capped(self):
         d.append_inbox({'dir': 'in', 'via': 'local', 'from': 'chris', 'to': 'chris', 'to_s': 'codex-box',
