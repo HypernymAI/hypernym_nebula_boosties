@@ -308,7 +308,7 @@ class Mail:
         self.checkpoint()
 
     # -- pairing
-    def pair(self, code: str, done, wanted=lambda: True) -> None:
+    def pair(self, code: str, done, wanted=lambda: True, until: float = 0.0) -> None:
         """Run one pairing attempt for `code` (both sides run the same thing); done(status, detail). Stops early when
         wanted() turns False (the person started another pairing)."""
         code = normalize(code)
@@ -316,10 +316,16 @@ class Mail:
         side = secrets.token_hex(6)
         s = SPAKE2_Symmetric(code.encode(), idSymmetric=b'dropship-v1')
         started = time.time()
+        deadline = until if until and until > started else started + PAIR_S     # long tracers: up to 7 days
         try:
-            self.post(topic, json.dumps({'t': 'pake', 'side': side, 'm': b64(s.start())}))
+            pake = json.dumps({'t': 'pake', 'side': side, 'm': b64(s.start())})
+            self.post(topic, pake)
+            reposted = time.time()
             key, sent_id = None, False
-            while time.time() - started < PAIR_S and not self.c.stop.is_set():
+            while time.time() < deadline and not self.c.stop.is_set():
+                if key is None and time.time() - reposted > 600:
+                    self.post(topic, pake)          # a joiner only looks back 15 min: keep our offer visible
+                    reposted = time.time()
                 if not wanted():
                     return done('cancelled', 'replaced by a newer pairing')
                 for m in self.poll(topic, '15m'):
@@ -344,7 +350,7 @@ class Mail:
                             return done('failed', 'the code did not match — check it and try again')
                         name = self.c.add_friend(card, 'paired')
                         return done('done', name)
-                self.c.stop.wait(4)
+                self.c.stop.wait(4 if time.time() - started < 600 else 15)
             done('failed', 'nobody joined with that code in time')
         except (OSError, ValueError, KeyError, TypeError) as e:
             done('failed', f'mailbox: {e}'[:160])

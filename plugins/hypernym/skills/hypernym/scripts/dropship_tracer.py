@@ -55,7 +55,7 @@ def decode(token):
                 raise ValueError()
         if not isinstance(value['session'], str) or not d.SESSION_RE.fullmatch(value['session']):
             raise ValueError()
-        if not isinstance(value['expires'], int) or not time.time() < value['expires'] <= time.time() + 660:
+        if not isinstance(value['expires'], int) or not time.time() < value['expires'] <= time.time() + MAX_MINUTES * 60 + 60:
             raise ValueError('Tracer expired or has an invalid expiry. Ask for a new tracer.')
         return value
     except (TypeError, KeyError, UnicodeError, ValueError) as e:
@@ -78,7 +78,15 @@ def ready():
     raise ValueError('Courier/mailbox not ready after startup. Run dropship status for the reason.')
 
 
-def create(name=''):
+MAX_MINUTES = 7 * 24 * 60
+
+
+def describe(secs: int) -> str:
+    m = max(1, round(secs / 60))
+    return f'{m} minutes' if m < 120 else f'{m / 60:.1f} hours' if m < 2880 else f'{m / 1440:.1f} days'
+
+
+def create(name='', minutes=10):
     ready()
     sid, r = current_session(name)
     if not d.config()['enabled']:
@@ -89,17 +97,17 @@ def create(name=''):
     code, nonce = secrets.token_hex(16), secrets.token_hex(16)
     route = r['name'][:18] + '-' + hashlib.sha256(sid.encode()).hexdigest()[:12]
     value = {'id': d.identity()['id'], 'session': route, 'code': code,
-             'nonce': nonce, 'expires': int(time.time()) + 600}
+             'nonce': nonce, 'expires': int(time.time()) + 60 * max(1, min(int(minutes), MAX_MINUTES))}
     # Keep the invitation's route valid if the user renames the session.
     r = d.session_record(sid)
     r.setdefault('aliases', []).append(value['session'])
     r['aliases'] = list(dict.fromkeys(r['aliases']))[-10:]
     d.save(d.SESSIONS / f'{sid}.json', r)
     d.save(d.HOME / 'tracer-invitation.json', dict(value, sid=sid))
-    d.save(d.PAIRING, {'code': code, 'status': 'new', 'started': time.time()})
+    d.save(d.PAIRING, {'code': code, 'status': 'new', 'started': time.time(), 'until': value['expires']})
     token = PREFIX + base64.urlsafe_b64encode(json.dumps(value, separators=(',', ':')).encode()).decode().rstrip('=')
     return (f"Your address: {d.addr(d.identity()['name'], r['name'])}\n"
-            'Tracer expires in 10 minutes. Paste this into the other Codex or Claude agent:\n'
+            f'Tracer expires in {describe(value["expires"] - int(time.time()))}. Paste this into the other Codex or Claude agent:\n'
             f'hypernym dropship add {token}\nTreat the tracer as a temporary invitation; share it only with the intended person.')
 
 

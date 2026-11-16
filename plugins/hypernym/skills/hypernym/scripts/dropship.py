@@ -1022,7 +1022,8 @@ class Courier:
                     log(f"pairing {status}: {detail}")
                 self.mail.pair(job['code'], done,
                                lambda code=job['code'], t=job['started']: load(PAIRING, {'code': '', 'started': 0})['code'] == code
-                               and load(PAIRING, {'code': '', 'started': 0})['started'] == t)
+                               and load(PAIRING, {'code': '', 'started': 0})['started'] == t,
+                               float(job['until']) if 'until' in job else 0.0)
             self.stop.wait(1)
 
     # -- network watch: open sockets only at home
@@ -2223,8 +2224,11 @@ def main() -> int:
     if a[:1] == ['tracer'] or (a[:1] == ['add'] and len(a) == 2 and a[1].startswith('dsp1-')):
         import dropship_tracer
         try:
-            name = os.environ.get('DROPSHIP_AS', '')
-            print(dropship_tracer.connect(a[1], name) if len(a) == 2 else dropship_tracer.create(name))
+            name = os.environ['DROPSHIP_AS'] if 'DROPSHIP_AS' in os.environ else ''
+            if len(a) == 2 and a[1].isdigit():              # tracer <minutes>: a longer-lived invitation
+                print(dropship_tracer.create(name, int(a[1])))
+            else:
+                print(dropship_tracer.connect(a[1], name) if len(a) == 2 else dropship_tracer.create(name))
             return 0
         except (ValueError, OSError) as e:
             print(f'Dropship: {e}')

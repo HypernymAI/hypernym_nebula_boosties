@@ -46,7 +46,10 @@ If `dropship_local` is unavailable, use the installed `dropship.py identity|name
 
 ## Codex terminal status and setup handoff
 
-"hypernym dropship tracer" calls `dropship_tracer` without a tracer. "hypernym dropship add <dsp1-...>"
+"hypernym dropship tracer" calls `dropship_tracer` without a tracer. A tracer lasts 10 minutes by default. For a
+longer one, as in "hypernym dropship tracer 120" or "a tracer good for 2 days", pass `minutes` (at most 10080 = 7 days).
+The friend it pairs is confined to this session either way. The accepting computer needs Hypernym 0.7.47+ to
+accept a tracer longer than 10 minutes. "hypernym dropship add <dsp1-...>"
 calls the same tool with `tracer` set to the pasted token. Remove whitespace introduced by line wrapping. Supply `as_session` with this session's verified name
 when known. Creating a tracer advertises this session and starts a ten-minute pairing invitation. Accepting one
 reuses an existing friendship or pairs, then checks the encrypted mailbox route to the specific invited inbox.

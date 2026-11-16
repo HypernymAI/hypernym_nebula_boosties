@@ -64,6 +64,7 @@ TOOLS = [
      'description': 'Create a ten-minute invitation for THIS Codex or Claude session, or accept a pasted tracer. Accepting checks an encrypted mailbox round trip to the invited inbox. It does not prove an agent is awake. Use for "hypernym dropship tracer" and "hypernym dropship add <tracer>".',
      'inputSchema': {'type': 'object', 'properties': {
          'tracer': {'type': 'string', 'description': 'The dsp1- invitation from the other computer; omit to create one.'},
+         'minutes': {'type': 'integer', 'description': 'When creating: how long the invitation stays valid (default 10, max 10080 = 7 days).'},
          'as_session': {'type': 'string', 'description': 'This session name, required when its identity cannot be determined uniquely.'}}}},
     {'name': 'hypernym_about',
      'description': "What the two plugins are (Nebula, the local shield; Hypernym, the Zephyr connector), plus the "
@@ -361,7 +362,8 @@ def call_tool(name: str, arguments: dict) -> tuple:
         return run_dropship(args)
     if name == 'dropship_tracer':
         env = {'DROPSHIP_AS': arguments['as_session']} if 'as_session' in arguments and arguments['as_session'] else {}
-        args = ['tracer', arguments['tracer']] if 'tracer' in arguments and arguments['tracer'] else ['tracer']
+        args = ['tracer', arguments['tracer']] if 'tracer' in arguments and arguments['tracer'] else (
+            ['tracer', str(int(arguments['minutes']))] if 'minutes' in arguments and arguments['minutes'] else ['tracer'])
         return run_dropship(args, env, timeout=200)
     if name == 'dropship_discover':
         return run_dropship(['discover'])
