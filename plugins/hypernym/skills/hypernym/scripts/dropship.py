@@ -246,6 +246,78 @@ def identity() -> dict:
     return me
 
 
+# ---------------------------------------------------------------------------------------------------- peer policy
+# Per-friend access, enforced by THIS computer's courier when a message arrives (LAN and mailbox alike), keyed by the
+# friend's authenticated machine id — names, aliases and renames cannot get around it:
+#   friends.json[pid]['blocked'] = True   → everything from that friend is dropped (logged, never delivered/woken)
+#   friends.json[pid]['scope'] = [sid…]   → that friend may reach ONLY these local sessions (stable session ids);
+#                                           bare-machine or other-session mail is forced into the scope or dropped,
+#                                           and pings/status tell that friend only the scoped session names.
+#   no 'scope' key                        → full trust (existing friends: your own computers, Benito…)
+# A friend paired through a tracer is scoped to the tracer's session automatically.
+def friend_policy(pid: str) -> dict:
+    f = load(FRIENDS, {})
+    f = f[pid] if pid in f else {}
+    return {'blocked': bool(f['blocked']) if 'blocked' in f else False,
+            'scope': list(f['scope']) if 'scope' in f and isinstance(f['scope'], list) else None}
+
+
+def friend_id(name: str) -> str:
+    """The authenticated machine id behind a display label (as delivered by LAN accept / mailbox receive)."""
+    friends = load(FRIENDS, {})
+    labels = friend_names(friends)
+    for pid, label in labels.items():
+        if label == name:
+            return pid
+    for pid, f in friends.items():
+        if f['name'] == name:
+            return pid
+    return ''
+
+
+def sessions_for(pid: str) -> list:
+    """What this computer tells friend `pid` about its sessions: everything reachable, or only its scope."""
+    pol = friend_policy(pid) if pid else {'blocked': False, 'scope': None}
+    if pol['blocked']:
+        return []
+    if pol['scope'] is None:
+        return advertised_sessions()
+    return [session_record(sid)['name'] for sid in pol['scope']]
+
+
+def set_policy(peer: str, scope=None, blocked=None, trust: bool = False) -> str:
+    friends = load(FRIENDS, {})
+    pid = peer if peer in friends else friend_id(peer.lstrip('#'))
+    if not pid:
+        return f'Dropship: no friend called {peer}. Friends: ' + ', '.join(sorted(friend_names(friends).values()))
+    f = friends[pid]
+    if trust:
+        f.pop('scope', None)
+        f['blocked'] = False
+    if blocked is not None:
+        f['blocked'] = blocked
+    if scope is not None:
+        sids = []
+        for name in scope:
+            hits = [(r['seen'], k) for k, r in all_sessions().items()
+                    if r['name'] == name.lstrip('#').split('/')[-1] or k == name]
+            if not hits:
+                return f'Dropship: no local session called {name}.'
+            sids.append(max(hits)[1])
+        f['scope'] = sids
+    save(FRIENDS, friends)
+    label = friend_names(friends)[pid] if pid in friend_names(friends) else f['name']
+    return f'Dropship: #{label} ' + policy_text(f)
+
+
+def policy_text(f: dict) -> str:
+    if 'blocked' in f and f['blocked']:
+        return 'is BLOCKED (nothing from it is delivered).'
+    if 'scope' in f and isinstance(f['scope'], list):
+        return 'may only reach: ' + ', '.join(f"#{identity()['name']}/{session_record(s)['name']}" for s in f['scope'])
+    return 'has full access (trusted).'
+
+
 def friend_names(friends=None):
     """Unique local labels; identity and keys never depend on a display name."""
     friends = load(FRIENDS, {}) if friends is None else friends
@@ -642,8 +714,8 @@ class Courier:
         self.refresh_names()
 
     # -- shared with the mailbox (dropship_mail.Mail)
-    def sessions_now(self) -> list:
-        return advertised_sessions()
+    def sessions_now(self, pid: str = '') -> list:
+        return sessions_for(pid) if pid else advertised_sessions()
 
     def on_lan(self, pid: str) -> bool:
         with self.lock:
@@ -653,11 +725,27 @@ class Courier:
         body = clean(body)
         to_s = to_s if SESSION_RE.match(to_s or '-') else ''
         from_s = from_s if SESSION_RE.match(from_s or '-') else ''
+        pid = friend_id(name)
+        pol = friend_policy(pid) if pid else {'blocked': False, 'scope': None}
+        if pol['blocked']:
+            log(f'dropped message from blocked friend {name} ({pid})')
+            return
         from dropship_tracer import receive
         if receive(self, name, body, to_s, from_s):
             return
         if body:
             owner = owner_of(to_s, name)
+            if pol['scope'] is not None and owner not in pol['scope']:
+                named = to_s and any(session_record(s)['name'] == to_s or
+                                     to_s in (session_record(s)['aliases'] if 'aliases' in session_record(s) else [])
+                                     for s in pol['scope'])
+                if to_s and not named:
+                    log(f'dropped message from scoped friend {name} ({pid}) to {to_s}: outside its scope')
+                    return
+                owner = pol['scope'][0] if pol['scope'] else ''   # bare-machine mail goes to its scope, never wider
+                if not owner:
+                    log(f'dropped message from scoped friend {name} ({pid}): empty scope')
+                    return
             append_inbox({'dir': 'in', 'via': via, 'from': name, 'from_s': from_s, 'to': self.me['name'], 'to_s': to_s,
                           'owner': owner, 'ts': time.time(), 'body': body})
             log_talk(owner, f'{name}/{from_s}' if from_s else name, 'in')
@@ -848,6 +936,17 @@ class Courier:
 
                 def done(status, detail, job=job):
                     job.update({'status': status, 'detail': detail, 'at': time.time()})
+                    inv = load(HOME / 'tracer-invitation.json', {})
+                    if status == 'done' and isinstance(inv, dict) and 'code' in inv and inv['code'] == job['code'] \
+                            and 'sid' in inv:
+                        pid = friend_id(detail)
+                        if pid:
+                            friends = load(FRIENDS, {})
+                            if 'scope' not in friends[pid]:
+                                friends[pid]['scope'] = [inv['sid']]
+                                friends[pid]['scoped_by'] = 'tracer'
+                                save(FRIENDS, friends)
+                                log(f"friend {detail} ({pid}) paired by tracer: scoped to session {inv['sid']}")
                     save(PAIRING, job)
                     self.pairing = dict(job)
                     log(f"pairing {status}: {detail}")
@@ -1764,7 +1863,8 @@ def resolve_target(target: str) -> str:
     return target
 
 
-CMD_RE = re.compile(r'^hypernym\s+dropship\s+(add|remove|sessions|awake|borg)\b\s*(.*)$', re.I | re.S)
+CMD_RE = re.compile(r'^hypernym\s+dropship\s+(add|remove|sessions|awake|borg|scope|trust|block|unblock|friends)\b\s*(.*)$',
+                    re.I | re.S)
 HASH_RE = re.compile(r'^#([a-z0-9][a-z0-9._-]{0,31}(?:/[a-z0-9][a-z0-9._-]{0,31})?)\s+(.+)$', re.S | re.I)
 
 
@@ -1790,6 +1890,18 @@ def hook_prompt(raw: str) -> str:
         r = set_borg(sid, True)                         # through to Claude: it starts the loop right now
         return through(borg_note(r) + '\nStart now: tell your user in one line that borg mode is on, then call '
                        'dropship_wait.')
+    if cmd and cmd.group(1).lower() in ('scope', 'trust', 'block', 'unblock', 'friends'):
+        verb, args = cmd.group(1).lower(), (cmd.group(2) or '').split()
+        if verb == 'friends':
+            result = friends_text()
+        elif not args:
+            result = f'Dropship: say which friend, e.g. "hypernym dropship {verb} teammate"' + (' session…' if verb == 'scope' else '')
+        elif verb == 'scope':
+            result = set_policy(args[0], scope=args[1:] or [rec['name']])
+        else:
+            result = set_policy(args[0], trust=verb == 'trust', blocked={'block': True, 'unblock': False}[verb]
+                                if verb in ('block', 'unblock') else None)
+        return json.dumps({'decision': 'block', 'reason': result})
     if cmd:                                             # instant commands; nothing typed is ever SENT by the hook
         verb, arg = cmd.group(1).lower(), (cmd.group(2) or '').strip()
         result = (set_exposed(sid, True) if verb == 'add' else set_exposed(sid, False) if verb == 'remove'
@@ -1805,6 +1917,14 @@ def hook_prompt(raw: str) -> str:
     if not new:
         return ''
     return through(as_context(new, addr(me, rec['name']), rec['name']))
+
+
+def friends_text() -> str:
+    friends = load(FRIENDS, {})
+    labels = friend_names(friends)
+    rows = [f"#{labels[pid] if pid in labels else f['name']}  ({pid}, {f['how'] if 'how' in f else '?'})  {policy_text(f)}"
+            for pid, f in sorted(friends.items(), key=lambda kv: kv[1]['name'])]
+    return 'Dropship friends:\n' + ('\n'.join(rows) if rows else '(none)')
 
 
 def session_for_cwd(cwd: str) -> str:
@@ -1970,6 +2090,17 @@ def main() -> int:
         return 0
     if a == ['sessions']:
         print(sessions_text())
+        return 0
+    if a == ['friends']:
+        print(friends_text())
+        return 0
+    if len(a) >= 2 and a[0] in ('scope', 'trust', 'block', 'unblock'):
+        if a[0] == 'scope':
+            print(set_policy(a[1], scope=a[2:]) if len(a) >= 3 else 'scope <friend> <session…>')
+        elif a[0] == 'trust':
+            print(set_policy(a[1], trust=True))
+        else:
+            print(set_policy(a[1], blocked=a[0] == 'block'))
         return 0
     if len(a) == 2 and a[0] == 'listen':
         return listen(a[1])

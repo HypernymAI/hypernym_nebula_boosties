@@ -32,7 +32,7 @@ class ReliabilityTests(unittest.TestCase):
         self.friend = {'id': 'remote', 'name': 'friend', 'box': bytes(self.remote.public_key).hex()}
         self.c = types.SimpleNamespace(me={'id': 'local', 'name': 'local', 'box_priv': bytes(self.local).hex()},
             friends={'remote': dict(self.friend)}, lock=threading.Lock(), stop=StopAfterPass(),
-            sessions_now=lambda: ['work'], on_lan=lambda _: False, peer_renamed=Mock(), peer_sessions={}, deliver=Mock())
+            sessions_now=lambda pid="": ['work'], on_lan=lambda _: False, peer_renamed=Mock(), peer_sessions={}, deliver=Mock())
         self.m = mail.Mail(self.c, 'https://example.invalid')
 
     def encrypted(self, mid, i=0, n=1, body='hello'):

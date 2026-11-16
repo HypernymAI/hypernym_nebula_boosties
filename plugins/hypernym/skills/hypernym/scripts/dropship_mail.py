@@ -211,7 +211,7 @@ class Mail:
             for i in range(start, len(chunks)):
                 env = {'k': kind, 'mid': mid, 'from': self.c.me['id'], 'to': friend['id'], 'ts': time.time(),
                        'i': i, 'n': len(chunks), 'body': chunks[i], 'to_s': to_s, 'from_s': from_s,
-                       'name': self.c.me['name'], 'sessions': self.c.sessions_now()}
+                       'name': self.c.me['name'], 'sessions': self.c.sessions_now(friend['id'])}
                 self.post(topic, 'dsp1.' + b64(box.encrypt(json.dumps(env).encode())))
                 if job is not None:
                     job['next_chunk'] = i + 1
@@ -228,7 +228,7 @@ class Mail:
                 if self.retry_at() > time.time() or any(storage.OUTBOX.glob('*.json')):
                     continue
                 try:
-                    self.send(f, json.dumps({'sessions': self.c.sessions_now(), 'name': self.c.me['name']}), 'ping')
+                    self.send(f, json.dumps({'sessions': self.c.sessions_now(f['id']), 'name': self.c.me['name']}), 'ping')
                 except (OSError, ValueError):
                     pass  # Receiver availability is independent of publishing quotas.
             self.c.stop.wait(60)
