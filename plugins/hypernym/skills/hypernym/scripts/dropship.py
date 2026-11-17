@@ -1011,14 +1011,20 @@ class Courier:
                             and 'sid' in inv:
                         pid = friend_id(detail)
                         if pid:
-                            friends = load(FRIENDS, {})
-                            if 'scope' not in friends[pid]:
-                                friends[pid]['scope'] = [inv['sid']]
-                                friends[pid]['scoped_by'] = 'tracer'
-                                save(FRIENDS, friends)
-                                log(f"friend {detail} ({pid}) paired by tracer: scoped to session {inv['sid']}")
-                    save(PAIRING, job)
-                    self.pairing = dict(job)
+                            with friends_lock():
+                                friends = load(FRIENDS, {})
+                                if 'scope' not in friends[pid]:
+                                    friends[pid]['scope'] = [inv['sid']]
+                                    friends[pid]['scoped_by'] = 'tracer'
+                                    save(FRIENDS, friends)
+                                    log(f"friend {detail} ({pid}) paired by tracer: scoped to session {inv['sid']}")
+                    # Only record the outcome while this is still THE pairing: a newer tracer/pair has already written
+                    # its own job to PAIRING, and saving the old (cancelled) job over it would kill the new one.
+                    current = load(PAIRING, {})
+                    still_ours = not isinstance(current, dict) or 'code' not in current or current['code'] == job['code']
+                    if still_ours:
+                        save(PAIRING, job)
+                    self.pairing = dict(job) if still_ours else dict(current)
                     log(f"pairing {status}: {detail}")
                 self.mail.pair(job['code'], done,
                                lambda code=job['code'], t=job['started']: load(PAIRING, {'code': '', 'started': 0})['code'] == code
