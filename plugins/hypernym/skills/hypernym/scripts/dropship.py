@@ -2059,7 +2059,8 @@ def cache_version(d: Path) -> tuple:
 
 def hot_update(managers: bool = True) -> str:
     lines = []
-    if managers:
+    before = plugin_caches()                     # Codex's `plugin add` DELETES the old version folder, which open
+    if managers:                                 # windows still run from: recreate any that vanish (below)
         steps = []
         claude = shutil.which('claude') or str(Path.home() / '.local' / 'bin' / 'claude')
         if Path(claude).exists():
@@ -2082,6 +2083,14 @@ def hot_update(managers: bool = True) -> str:
     if not caches:
         return '\n'.join(lines + ['No cached hypernym plugin found.'])
     newest = max(caches, key=cache_version)
+    restored = 0
+    for d in before:
+        if not d.exists() and d.parent.exists():
+            shutil.copytree(newest, d)
+            restored += 1
+    if restored:
+        lines.append(f'restored {restored} cached copies a plugin manager deleted while windows still use them')
+        caches = plugin_caches()
     synced = 0
     for d in caches:
         if d == newest:

@@ -43,6 +43,34 @@ class HotUpdateTests(unittest.TestCase):
             self.assertEqual((c / 'skills' / 'dropship' / 'SKILL.md').read_text(), 'skill NEW')
         self.assertIn('brought 2 older cached copies', out)
 
+    def test_copy_deleted_by_a_plugin_manager_is_restored(self):
+        old, new = make('0.7.47', 'old'), make('0.7.48', 'NEW')
+        d.running = lambda: False
+        d.config = lambda: {'enabled': False}
+        import shutil
+        real_which = shutil.which
+        d.shutil.which = lambda name: None                  # no real claude
+        d.codex_bin = lambda: ''                            # no real codex
+        orig = d.plugin_caches
+        calls = []
+
+        def caches():                                       # the manager step runs between the first two listings:
+            if len(calls) == 1:                             # simulate Codex deleting the old version folder
+                shutil.rmtree(old, ignore_errors=True)
+            calls.append(1)
+            return orig()
+        d.plugin_caches = caches
+        try:
+            out = d.hot_update(managers=True)
+        finally:
+            d.plugin_caches, d.shutil.which = orig, real_which
+        try:
+            self.assertIn('restored 1 cached copies', out)
+            self.assertEqual((old / 'skills' / 'hypernym' / 'scripts' / 'dropship.py').read_text(), 'NEW')
+        finally:
+            shutil.rmtree(old, ignore_errors=True)
+            shutil.rmtree(new, ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()
