@@ -257,7 +257,9 @@ def status_row(arguments: dict) -> tuple:
 
 def run_dropship(args: list, env: dict = None, timeout: int = 120) -> tuple:
     p = subprocess.Popen([sys.executable, str(DROPSHIP), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         text=True, stdin=subprocess.DEVNULL, env=dict(os.environ, DROPSHIP_MCP_PID=str(os.getpid()), **(env or {})))
+                         text=True, stdin=subprocess.DEVNULL, env={**os.environ, **(env or {}),
+                             "DROPSHIP_MCP_PID": str(os.getpid()),
+                             "DROPSHIP_CALL_THREAD": getattr(CALL, "thread_id", "")})
     rid = CALL.id if hasattr(CALL, 'id') else None
     if rid is not None:
         RUNNING[rid] = p
@@ -638,9 +640,10 @@ def respond(message_id, result=None, error=None) -> None:
         sys.stdout.flush()
 
 
-def run_call(message_id, name: str, arguments: dict, progress=None) -> None:
+def run_call(message_id, name: str, arguments: dict, progress=None, thread_id="") -> None:
     """A dropship tool call on its own thread."""
     CALL.id = message_id
+    CALL.thread_id = thread_id
     CALL.progress = progress
     try:
         text, is_error = call_tool(name, arguments)
@@ -697,7 +700,12 @@ def handle(message: dict) -> None:
         if 'name' in params and str(params['name']).startswith('dropship_'):
             meta = params['_meta'] if '_meta' in params and isinstance(params['_meta'], dict) else {}
             token = meta['progressToken'] if 'progressToken' in meta else None
-            threading.Thread(target=run_call, args=(message_id, params['name'], arguments, token), daemon=True).start()
+            thread_id = meta.get('threadId', '')
+            if not isinstance(thread_id, str):
+                respond(message_id, error={'code': -32602, 'message': 'invalid threadId metadata'})
+                return
+            threading.Thread(target=run_call, args=(message_id, params['name'], arguments, token, thread_id),
+                             daemon=True).start()
             return
         try:
             text, is_error = call_tool(params['name'], arguments)

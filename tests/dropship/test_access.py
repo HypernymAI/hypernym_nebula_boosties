@@ -96,6 +96,18 @@ class AccessTests(unittest.TestCase):
                 d.calling_session()
             self.assertIn('several Codex threads', str(e.exception.code))
 
+    def test_shared_host_uses_request_thread(self):
+        session('c1-sid', 'codex-one', 500, app='codex')
+        session('c2-sid', 'codex-two', 500, app='codex')
+        with self.as_window(500, app='codex'), patch.dict(os.environ, {
+            'DROPSHIP_MCP_PID': '4242', 'DROPSHIP_CALL_THREAD': 'c1-sid'
+        }):
+            self.assertEqual(d.calling_session(), 'c1-sid')
+            with patch.dict(os.environ, {'DROPSHIP_AS': 'codex-two'}), self.assertRaises(SystemExit):
+                d.calling_session()
+            with patch.dict(os.environ, {'DROPSHIP_CALL_THREAD': 'alpha-sid'}), self.assertRaises(SystemExit):
+                d.calling_session()
+
     def test_local_send_never_reaches_a_session_that_is_not_added(self):
         session('gamma-sid', 'gamma', 300, exposed=False)
         out = d.send(f"{d.identity()['name']}/gamma", 'hello', 'alpha-sid')

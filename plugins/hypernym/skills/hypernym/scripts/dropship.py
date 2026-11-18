@@ -2470,11 +2470,12 @@ def calling_session() -> str:
                      'user to run this from a Claude Code or Codex window.')
         mine = {k for k, r in ss.items()
                 if 'host' in r and r['host'] == host and 'host_start' in r and abs(r['host_start'] - started) < 3}
-        if host_app(host) == 'codex' and len(mine) > 1:
-            # one Codex app can hold several threads; its MCP calls don't say which one is asking
-            sys.exit('Dropship: several Codex threads share this app, so which one is calling cannot be verified. '
-                     'Use one Codex thread per app window for Dropship.')
-        sid = active_session(host, started)
+        codex = host_app(host) == 'codex'
+        thread_id = os.environ.get('DROPSHIP_CALL_THREAD', '') if codex else ''
+        if codex and not thread_id and len(mine) > 1:
+            sys.exit('Dropship: several Codex threads share this app and the client omitted threadId for this call. '
+                     'Use a client that supplies MCP thread metadata or a dedicated Codex process.')
+        sid = thread_id or active_session(host, started)
         if not sid or sid not in mine:
             sys.exit('Dropship: this window is not registered yet. Ask your user to type any prompt in it (after '
                      '/rename), then try again.')
