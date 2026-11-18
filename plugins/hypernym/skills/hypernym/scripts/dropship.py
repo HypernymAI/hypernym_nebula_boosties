@@ -972,7 +972,7 @@ class Courier:
                 continue
             msgs = inbox()
             for sid, r in reachable().items():
-                if not is_codex(r):
+                if not is_codex(r) or (Path.home() / '.config' / 'hypernym' / 'quiet-codex-threads' / _sid(sid)).is_file():
                     continue
                 cursor = r['n'] if r['n'] is not None else (msgs[-1]['n'] if msgs else 0)
                 mine = [m for m in msgs if m['dir'] == 'in' and m['n'] > cursor and 'owner' in m and m['owner'] == sid
