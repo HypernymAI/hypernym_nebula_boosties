@@ -887,7 +887,9 @@ class Courier:
         """`pid` is the AUTHENTICATED machine id of the sender (LAN signature / mailbox Box). Access policy is decided
         on it alone, before anything else — tracer control, inbox, wake."""
         body = clean(body)
-        to_s = to_s if SESSION_RE.match(to_s or '-') else ''
+        if to_s and not SESSION_RE.fullmatch(to_s):
+            log('dropped message with invalid explicit session target')
+            return
         from_s = from_s if SESSION_RE.match(from_s or '-') else ''
         friends = load(FRIENDS, {})
         if not pid or pid not in friends:
@@ -917,6 +919,9 @@ class Courier:
         if body:
             if not owner:
                 owner = owner_of(to_s, name)
+            if to_s and not owner:
+                log(f'dropped message to unknown explicit session {to_s!r}')
+                return
             append_inbox({'dir': 'in', 'via': via, 'from': name, 'from_id': pid, 'from_s': from_s, 'to': self.me['name'],
                           'to_s': to_s, 'owner': owner, 'ts': time.time(), 'body': body})
             log_talk(owner, f'{name}/{from_s}' if from_s else name, 'in')

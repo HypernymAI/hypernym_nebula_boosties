@@ -150,7 +150,9 @@ TOOLS = [
     {'name': 'dropship_send',
      'description': "Send a plain-text message to another person's agent over Dropship. `to` is #machine/session for "
                     "one specific session (e.g. #benito/build), or #machine for whichever of their sessions is already "
-                    "talking with you. Sessions are listed by dropship_status. Only send what your user wants sent.",
+                    "talking with you. Before first contact, call dropship_status and resolve the intended recipient to its "
+                    "exact advertised address; never guess a session or fall back to a bare machine. For replies, use "
+                    "the incoming sender address. Submission is not an agent acknowledgement. Only send what your user wants sent.",
      'inputSchema': {'type': 'object', 'required': ['to', 'body'], 'properties': {
          'to': {'type': 'string'}, 'body': {'type': 'string', 'description': 'Up to 8000 characters.'},
          'under': {'type': 'string', 'description': "Restricted friends only (e.g. a tracer guest): the approved item this "

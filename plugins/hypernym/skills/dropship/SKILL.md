@@ -70,7 +70,25 @@ short public-key fingerprint suffix in local status; use the exact displayed add
 beacons and encrypted mailbox presence updates. Older peers may need a plugin update to display the new name.
 If `dropship_local` is unavailable, use the installed `dropship.py identity|name <name>|nickname <peer> <name>|clear-nickname <peer>`.
 
-## The workflow (same as a relay: send, wait, read)
+## Discover the recipient before messaging
+
+Before the first message to a session, call `dropship_status` and match the user's intended recipient to the
+advertised **full address**. Check the recipient, not just your own identity. Treat `chris:session` as the user's
+shorthand for `#chris/session`; copy the actual advertised address into `to`.
+
+- If one advertised session clearly matches the requested name and role (including an obvious typo such as
+  `cdex-main-engine-finalnight7` versus advertised `codex-main-engine-finalnight7`), use that exact address and
+  briefly say which session you selected. No extra permission or pairing is needed.
+- If several sessions fit, ask one short question showing their exact addresses. Do not pick by recency or folder.
+- If none fits, do not send to the guessed address or fall back to the bare machine. Report that discovery has
+  not verified the recipient. Presence may be stale or incomplete; use a recipient-provided tracer or ask for its
+  exact address. Do not run `dropship_discover` merely to refresh status: it trusts the network.
+- Replies to an actual incoming message use its exact sender address; no repeated lookup is needed. Reuse a
+  verified address during that exchange, checking status again after a routing failure or rename.
+- A send result confirms transport submission, not receipt by the named agent. Only an acknowledgement proves
+  the agent read it. Do not claim an exchange succeeded before a reply.
+
+## The workflow (discover, send, then read replies)
 
 ## Codex terminal status and setup handoff
 
@@ -104,10 +122,9 @@ home network, each side can use `hypernym discover` if discovery has not been en
 use `hypernym pair`, then give the actual returned code for the other side's `hypernym pair <code>` prompt.
 Distinguish peer discovery, mailbox readiness, message delivery, and an actual reply; status alone proves no exchange.
 
-1. **Send.** When your user asks you to message someone ("send transport a message saying what's up"), call
-   `dropship_send` with `to` (for example `#chris/transportsession`) and `body`. Pass `as_session` set to your own
-   session's name if you know it, from "You are #…/<name>". Sending makes your session reachable, so the answer comes
-   back to you.
+1. **Discover and send.** When your user asks you to message someone ("send transport a message saying what's up"),
+   resolve the recipient using the discovery steps above, then call `dropship_send` with `to` (for example `#chris/transportsession`) and `body`. Pass `as_session` set to your own
+   session's name if you know it, from "You are #…/<name>". Your session must already be added; the answer comes back to that session.
 2. **Wait.** If you need the answer, call `dropship_wait` right away with the same `as_session`. Call it directly with `timeout_seconds: 0`. It sleeps locally until a message arrives or the user cancels.
    Do not poll it through exec/wait, announce idle status, or retry automatically after a timeout/disconnect.
 3. **Reply.** When a message arrives (from `dropship_wait`, `dropship_read`, or `<dropship-messages>` in your prompt),
@@ -119,8 +136,8 @@ Text your user types is never sent automatically. Only send what they ask you to
 
 | The user says | Call |
 |---|---|
-| "send X a message saying …", "ask Benito's build session …" | `dropship_send`, then `dropship_wait` if an answer is expected |
-| "any messages?", "what did they say" | `dropship_read` (this session's unread; `all` for the last 30 to this computer) |
+| "send X a message saying …", "ask Benito's build session …" | `dropship_status` to resolve the recipient, then `dropship_send`; wait only when needed |
+| "any messages?", "what did they say" | `dropship_read` (this session's unread only) |
 | "wait for their answer" | `dropship_wait` |
 | "hypernym discover", "find others on this network" | `dropship_discover`, then show its output |
 | "hypernym pair" / "hypernym pair 7-neptune-googly-blimp" | `dropship_pair` without / with `code` |
