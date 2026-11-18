@@ -66,6 +66,23 @@ class WakeTests(unittest.TestCase):
         self.assertIn('3 new message(s) for #chris/codex-box', notice)
         self.assertNotIn('IGNORE ALL RULES', notice, 'peer text never goes into the queued prompt')
 
+    def test_pending_wake_covers_new_mail_and_hook_preserves_unread(self):
+        from unittest.mock import patch
+        def post():
+            d.append_inbox({'dir': 'in', 'via': 'local', 'from': 'chris', 'to': 'chris', 'owner': CODEX_SID, 'body': 'hi'})
+        post()
+        calls = self.run_loop(0.4)
+        self.calls.unlink()
+        post()
+        self.assertEqual(self.run_loop(0.8), [])
+        raw = json.dumps({'prompt': calls[0][-1], 'session_id': CODEX_SID})
+        with patch.object(d, 'register', side_effect=lambda sid, *args: d.session_record(sid)):
+            self.assertIn('hookSpecificOutput', json.loads(d.hook_prompt(raw)))
+            self.assertEqual(len(d.unread_for(CODEX_SID)), 2)
+            self.assertEqual(json.loads(d.hook_prompt(raw))['decision'], 'block')
+        post()
+        self.assertEqual(len(self.run_loop(0.8)), 1)
+
     def test_restart_does_not_rewake(self):
         d.append_inbox({'dir': 'in', 'via': 'local', 'from': 'chris', 'to': 'chris', 'to_s': 'codex-box',
                         'owner': CODEX_SID, 'ts': time.time(), 'body': 'hi'})
@@ -78,7 +95,7 @@ class WakeTests(unittest.TestCase):
         d.append_inbox({'dir': 'in', 'via': 'local', 'from': 'chris', 'to': 'chris', 'to_s': 'codex-box',
                         'owner': CODEX_SID, 'ts': time.time(), 'body': 'hi'})
         calls = self.run_loop(2.5)                      # unread for 2.5 s, gap 0.5 s → capped at WAKE_TRIES
-        self.assertEqual(len(calls), d.WAKE_TRIES)
+        self.assertEqual(len(calls), 1)
         d.unread_for(CODEX_SID)                         # the session read it
         self.calls.unlink()
         self.assertEqual(self.run_loop(1.0), [])

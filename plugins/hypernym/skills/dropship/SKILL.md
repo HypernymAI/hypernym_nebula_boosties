@@ -175,8 +175,7 @@ with `DROPSHIP_AS=<your session name>` in the environment.
 When mail arrives for a reachable session, Dropship wakes it, so nobody has to sit in `dropship_wait`.
 
 - **Codex:** the courier runs `codex queue --thread <id> --resume` with a short notice: "[Dropship] N new message(s)
-  for #you from #them. Call dropship_read…". It sends one notice per batch of new mail, and if the mail stays
-  unread it tries once more after two minutes (two notices at most). The peer's text never goes into the queued prompt.
+  for #you from #them. Call dropship_read…". One queued notice covers additional arrivals until the session reads its mail. The peer's text never goes into the queued prompt.
 - **Claude Code:** a channel push. The message arrives as a `<channel source="hypernym">` event containing the
   `<dropship-messages>` block, and the idle session starts a new turn. This only works when Claude was started with
   the plugin as a channel, because it isn't on Anthropic's allowlist:
