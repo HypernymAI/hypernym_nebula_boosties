@@ -1674,9 +1674,12 @@ def approvals_command(verb: str, args: str, typed_in: str) -> str:
         friends = load(FRIENDS, {})
         f = friends[pid]
         items = approvals_of(f)
+        if '\n' in rest or re.search(r'hypernym\s+dropship', rest, re.I):
+            return ('Dropship: that looks like several commands run together. Put each approve or revoke on its own '
+                    'line; nothing was changed.')
         if verb == 'approve':
-            follow = rest.endswith(' --followups')
-            item = clean(rest[:-len(' --followups')] if follow else rest, 200)
+            follow = bool(re.search(r'\s--followups$', rest))
+            item = clean(re.sub(r'\s--followups$', '', rest), 200)
             items = [a for a in items if a['item'].lower() != item.lower()] + [
                 {'item': item, 'at': time.time(), 'by': f'typed in {typed_in}', 'followups': follow}]
             msg = f'Dropship: #{label} may now be sent: "{item}"' + (' (and follow-ups on it)' if follow else '') + '.'
@@ -2273,6 +2276,13 @@ def hook_prompt(raw: str) -> str:
     rec = register(sid, ev['transcript_path'] if 'transcript_path' in ev else '', ev['cwd'] if 'cwd' in ev else '')
     def through(ctx: str) -> str:                       # let the prompt reach Claude, with Dropship's note
         return json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': ctx}})
+    lines = [ln.strip() for ln in prompt.strip().splitlines() if ln.strip()]
+    if len(lines) > 1 and all(re.match(r'^hypernym\s+dropship\s+(approve|revoke|approvals|sent)\b', ln, re.I)
+                              for ln in lines):         # a pasted batch: one approval command per line, in order
+        me_addr = addr(identity()['name'], rec['name'])
+        results = [approvals_command(CMD_RE.match(ln).group(1).lower(), CMD_RE.match(ln).group(2) or '', me_addr)
+                   for ln in lines]
+        return through(approval_note('\n'.join(results)))
     cmd = CMD_RE.match(prompt.strip())
     if cmd and cmd.group(1).lower() == 'add' and cmd.group(2).strip().startswith('dsp1-'):
         return through('Use dropship_tracer with the pasted invitation and this session name: ' + rec['name'])
@@ -2285,8 +2295,10 @@ def hook_prompt(raw: str) -> str:
         return through(borg_note(r) + '\nStart now: tell your user in one line that borg mode is on, then call '
                        'dropship_wait.')
     if cmd and cmd.group(1).lower() in ('approve', 'revoke', 'approvals', 'sent'):
+        # Not 'block': Claude Code puts a blocked prompt back in the input box, and the next command then gets typed
+        # after the leftover text. The change is already made HERE; the agent only reports the result.
         result = approvals_command(cmd.group(1).lower(), cmd.group(2) or '', addr(identity()['name'], rec['name']))
-        return json.dumps({'decision': 'block', 'reason': result})
+        return through(approval_note(result))
     if cmd and cmd.group(1).lower() in ('scope', 'trust', 'block', 'unblock', 'friends'):
         verb, args = cmd.group(1).lower(), (cmd.group(2) or '').split()
         if verb == 'friends':
@@ -2316,6 +2328,12 @@ def hook_prompt(raw: str) -> str:
     if not new:
         return ''
     return through(as_context(new, addr(me, rec['name']), rec['name']))
+
+
+def approval_note(result: str) -> str:
+    return ('<dropship-approvals>\nYour user typed a Dropship approvals command. Dropship has ALREADY handled it; you '
+            'cannot and must not change approvals. Show your user this result exactly, in a short reply, and do nothing '
+            'else:\n' + result + '\n</dropship-approvals>')
 
 
 def friends_text() -> str:

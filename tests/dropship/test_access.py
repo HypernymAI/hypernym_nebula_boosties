@@ -177,8 +177,10 @@ class AccessTests(unittest.TestCase):
         prompt = lambda text: d.hook_prompt(json.dumps({'prompt': text, 'session_id': 'alpha-sid',
                                                         'transcript_path': '', 'cwd': '/w'}))
         out = json.loads(prompt('hypernym dropship approve nick the Granite write-up'))
-        self.assertEqual(out['decision'], 'block', 'handled before any agent sees it')
-        self.assertIn('Granite', out['reason'])
+        ctx = out['hookSpecificOutput']['additionalContext']
+        self.assertNotIn('decision', out, 'not blocked: a blocked prompt is put back in the input box')
+        self.assertIn('ALREADY handled', ctx)
+        self.assertIn('Granite', ctx)
         f = d.load(d.FRIENDS, {})[NICK]
         self.assertEqual(d.approval_for(f, 'the granite write-up'), 'the Granite write-up')
         self.assertEqual(d.approval_for(f, '1'), 'the Granite write-up')
@@ -195,9 +197,25 @@ class AccessTests(unittest.TestCase):
             self.assertIn('restricted', d.send('all', 'x', 'alpha-sid'))
         log = [json.loads(x) for x in d.SENT_LOG.read_text().splitlines()]
         self.assertEqual([(e['to_id'], e['item'], e['session']) for e in log], [(NICK, 'the Granite write-up', 'alpha')])
-        self.assertIn('Granite', json.loads(prompt('hypernym dropship sent nick'))['reason'])
+        self.assertIn('Granite', json.loads(prompt('hypernym dropship sent nick'))['hookSpecificOutput']['additionalContext'])
         json.loads(prompt('hypernym dropship revoke nick 1'))
         self.assertEqual(d.approvals_of(d.load(d.FRIENDS, {})[NICK]), [])
+
+    def test_pasted_batch_is_one_command_per_line(self):
+        prompt = lambda text: json.loads(d.hook_prompt(json.dumps({'prompt': text, 'session_id': 'alpha-sid',
+                                                                   'transcript_path': '', 'cwd': '/w'})))
+        out = prompt('hypernym dropship approve nick general advice --followups\n'
+                     'hypernym dropship approve nick Granite results\n'
+                     'hypernym dropship approve nick RunPod demand data\n'
+                     'hypernym dropship revoke nick 3')
+        self.assertNotIn('decision', out)
+        items = d.approvals_of(d.load(d.FRIENDS, {})[NICK])
+        self.assertEqual([a['item'] for a in items], ['general advice', 'Granite results'])
+        self.assertTrue(items[0]['followups'])
+        self.assertFalse(items[1]['followups'])
+        out = prompt('hypernym dropship approve nick x --followupshypernym dropship approve nick y')   # leftover text
+        self.assertIn('run together', out['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(len(d.approvals_of(d.load(d.FRIENDS, {})[NICK])), 2, 'nothing changed')
 
     def test_courier_save_keeps_approvals(self):
         f = d.load(d.FRIENDS, {})
