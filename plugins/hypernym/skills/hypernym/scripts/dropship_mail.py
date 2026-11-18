@@ -290,19 +290,41 @@ class Mail:
             except (ValueError, KeyError, TypeError):
                 pass
             return
-        if kind != 'msg':
+        if kind not in ('msg', 'secret', 'secret-receipt'):
             return
         key = friend['id'] + ':' + mid
         if key in self.done:
             return
-        got = self.parts.setdefault(key, {'ts': time.time(), 'n': n, 'chunks': {},
+        if kind == 'secret':
+            # Authorize BEFORE buffering a single byte, and never journal secret chunks to disk: they live in memory
+            # only (a restart mid-transfer drops them; the sender re-offers).
+            if not self.c.secret_allowed(friend['id'], str(env.get('to_s', ''))):
+                self.c.secret_mail('secret-refused', friend['id'], '', mid, str(env.get('to_s', '')))
+                self.done[key] = time.time()
+                return
+            # Chunks are buffered on disk ENCRYPTED (key from this machine's private key + peer + message id), so a
+            # restart mid-transfer resumes where the sender's retry resumes — and nothing readable is ever written.
+            import dropship_secret
+            whole = dropship_secret.buffer_chunk(friend['id'], mid, i, n, str(env.get('to_s', '')), str(env['body']))
+            if whole is not None:
+                self.done[key] = time.time()
+                self.c.secret_mail('secret', friend['id'], self.c.friends[friend['id']]['name'], whole,
+                                   str(env.get('to_s', '')))
+                self.checkpoint()                    # journals only `done`, never the secret
+            return
+        got = self.parts.setdefault(key, {'ts': time.time(), 'n': n, 'chunks': {}, 'kind': kind,
                                          'to_s': str(env.get('to_s', '')), 'from_s': str(env.get('from_s', ''))})
-        if got['n'] != n or got['to_s'] != str(env.get('to_s', '')) or got['from_s'] != str(env.get('from_s', '')):
+        if got['n'] != n or got['kind'] != kind or got['to_s'] != str(env.get('to_s', '')) \
+                or got['from_s'] != str(env.get('from_s', '')):
             return
         got['chunks'][str(i)] = str(env['body'])
         if len(got['chunks']) == n:
-            self.c.deliver(self.c.friends[friend['id']]['name'], ''.join(got['chunks'][str(k)] for k in range(n)),
-                           'mailbox', float(env['ts']), got['to_s'], got['from_s'], friend['id'])
+            whole = ''.join(got['chunks'][str(k)] for k in range(n))
+            if (got['kind'] if 'kind' in got else 'msg') == 'msg':
+                self.c.deliver(self.c.friends[friend['id']]['name'], whole, 'mailbox', float(env['ts']),
+                               got['to_s'], got['from_s'], friend['id'])
+            else:                                       # typed secret transfer: never the chat/inbox body path
+                self.c.secret_mail(got['kind'], friend['id'], self.c.friends[friend['id']]['name'], whole, got['to_s'])
             self.done[key] = time.time()
             del self.parts[key]
         self.checkpoint()

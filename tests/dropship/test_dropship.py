@@ -67,11 +67,13 @@ me = d.identity(); me['name'] = {name!r}; d.save(d.IDENTITY, me)""")
     def stop(self):
         self.cli('off')
 
-    def session(self, sid: str, title: str = '') -> 'Session':
+    def session(self, sid: str, title: str = '', added: bool = True) -> 'Session':
         t = self.home / 'transcripts' / f'{sid}.jsonl'
         t.write_text(json.dumps({'type': 'custom-title', 'customTitle': title, 'sessionId': sid}) + '\n' if title else '')
         s = Session(self, sid, t)
         s.prompt('hello')                       # a session registers on its first prompt
+        if added:                               # only added sessions may use Dropship
+            s.prompt('hypernym dropship add')
         return s
 
     def inbox(self) -> list:
@@ -156,7 +158,7 @@ def test_sessions_targeted_routing(a, b, c, d):
 def test_sessions_unknown_name_refused(a, b, c, d):
     s = a.session('a-x-3', 'Xray')
     y = b.session('b-y-3', 'Yankee')                          # most recent → bob's default
-    hidden = b.session('b-hidden-4', 'Hidden')                # newer still → the default now; yankee is not added
+    hidden = b.session('b-hidden-4', 'Hidden', added=False)   # newer still, but never added: never reachable
     y.prompt('x')                                             # yankee most recent again → default; hidden unreachable
     wait(lambda: 'yankee' in a.cli('status') and 'hidden' not in a.cli('status'), 20, 'alice learns the defaults')
     check('has no session called nope' in s.send('#bob/nope hi'), 'unknown name refused')
@@ -210,13 +212,16 @@ def test_awake_targets_the_tab(a, b, c, d):
     check(rec['tty'].startswith('/dev/tty') and f'tty of' in script and rec['tty'] in script, script)
 
 
-def test_sender_is_auto_added_and_alias(a, b, c, d):
-    quiet = a.session('a-quiet-11', 'Quiet')                 # never said "add"
+def test_sender_must_be_added_and_alias(a, b, c, d):
+    quiet = a.session('a-quiet-11', 'Quiet', added=False)    # never said "add"
     newest = a.session('a-newest-12', 'Newer')               # so quiet is not the default either
     check(not json.loads((a.home / 'sessions' / 'a-quiet-11.json').read_text())['exposed'], 'starts unreachable')
+    r = quiet.send('#bob-build should not go')
+    check('not added' in r, f'a session that was never added cannot send: {r}')
+    check(not json.loads((a.home / 'sessions' / 'a-quiet-11.json').read_text())['exposed'], 'sending does not add it')
+    quiet.prompt('hypernym dropship add')
     r = quiet.send('#bob-build alias form works')             # #machine-session
     check('sent to #bob/build' in r and 'dropship_wait' in r, r)
-    check(json.loads((a.home / 'sessions' / 'a-quiet-11.json').read_text())['exposed'], 'sending auto-adds the sender')
     wait(lambda: 'quiet' in b.cli('status'), 20, 'bob learns #alice/quiet')
 
 
@@ -334,6 +339,9 @@ def test_borg_silent_wait_and_cancel(a, b, c, d):
         check(result.startswith('sent'), result)
         response = replies.get(timeout=5)
         check(response['id'] == 2 and 'wake-on-message' in response['result']['content'][0]['text'], 'one response on actual mail')
+        # Every test session runs under the test runner's one app process, so that "window" is on whichever session
+        # last had a prompt: put it back on the drone, as a real drone window would be, before its next waits.
+        drone.prompt('back to the drone')
         rpc({'id': 3, 'method': 'tools/call', 'params': {'name': 'dropship_wait', 'arguments': {'as_session': 'silent-drone'}}})
         time.sleep(.5)
         rpc({'method': 'notifications/cancelled', 'params': {'requestId': 3}})
@@ -460,6 +468,51 @@ def test_network_pairing_and_mail(a, b, c, d):
     check('right back at you' in t.got(), 'mailroom session gets the mailbox reply')
 
 
+def test_network_secret_file(a, b, c, d):
+    """--network: a secret file goes alice → carol without its contents ever appearing in output, inbox or staging."""
+    SECRET = 'sk-test-' + 'Q' * 20 + '-do-not-print'
+    src = a.home / 'api.secret'
+    src.write_text(SECRET + '\n')
+    t = a.session('a-secret-20', 'Vault')
+    # carol has NOT granted alice yet: refused, nothing staged
+    out = a.cli('secret-offer', str(src), '#carol', '--label', 'API key', extra_env={'DROPSHIP_SESSION': t.sid})
+    check(SECRET not in out and 'queued' in out, out)
+    time.sleep(12)
+    check(not list((c.home / 'secrets').glob('*-sx_*')) if (c.home / 'secrets').exists() else True,
+          'ungranted secret must not be staged')
+    keeper = c.session('c-keeper-21', 'Keeper')              # carol's session that receives it
+    check('say which session' in c.cli('secret-allow', 'alice'), 'no implicit wildcard grants')
+    check('accepting' in c.cli('secret-allow', 'alice', '--session', 'keeper', '--dest', str(c.home)), 'scoped grant')
+    out = a.cli('secret-offer', str(src), '#carol', '--label', 'API key', '--move', extra_env={'DROPSHIP_SESSION': t.sid})
+    tid = re.search(r'(sx_[0-9a-f]{16})', out).group(1)
+    wait(lambda: tid in c.cli('secret-list', '--session', 'keeper'), 60, 'carol has the secret staged')
+    listing = c.cli('secret-list', '--session', 'keeper')
+    check(SECRET not in listing and 'API key' in listing, listing)
+    staged = next((c.home / 'secrets').glob(f'*-{tid}.enc')).read_bytes()      # namespaced by sender id
+    check(SECRET.encode() not in staged, 'staged secret is encrypted at rest')
+    for m in (a.inbox() + c.inbox()):
+        check(SECRET not in m['body'], f'secret leaked into an inbox line: {m}')
+    proj = c.home / 'proj'
+    proj.mkdir(exist_ok=True)
+    (proj / '.env').write_text('OTHER=1\n')
+    try:
+        refused = c.cli('secret-install', tid, str(proj / '.env'), '--key', 'API_KEY')
+    except AssertionError as e:                       # it fails closed with a non-zero exit
+        refused = str(e)
+    check(SECRET not in refused and 'API_KEY' not in (proj / '.env').read_text()
+          and list((c.home / 'secrets').glob(f'*-{tid}.enc')), 'no session context: fails closed, nothing installed')
+    out = c.cli('secret-install', tid, str(proj / '.env'), '--key', 'API_KEY', '--session', 'keeper')
+    check(SECRET not in out and 'installed' in out, out)
+    env = (proj / '.env').read_text()
+    check(f'API_KEY="{SECRET}"' in env and 'OTHER=1' in env, 'installed into .env as one quoted key')
+    check(oct((proj / '.env').stat().st_mode & 0o777) == '0o600', 'installed file is private')
+    check(not list((c.home / 'secrets').glob(f'*-{tid}.*')), 'staging removed after install')
+    wait(lambda: not src.exists(), 60, 'alice deletes the source after the verified receipt (--move)')
+    for f in (a.home / 'daemon.log', c.home / 'daemon.log', a.home / 'mcp.log'):
+        if f.exists():
+            check(SECRET not in f.read_text(), f'secret leaked into {f.name}')
+
+
 # ------------------------------------------------------------------------------------------------------------ runner
 def test_network_tracer(a, b, c, d):
     origin = a.session('tracer-origin', 'Codex Origin')
@@ -517,7 +570,7 @@ def main() -> int:
              'test_sender_is_auto_added_and_alias', 'test_typed_text_is_never_sent',
              'test_wait_works_like_wait_for_reply', 'test_borg_mode', 'test_mcp_wait_never_blocks_a_send', 'test_borg_wait_heartbeat_keeps_claude_code_alive',
              'test_sessions_history_order',
-             'test_lan_attacks_refused', 'test_bar_width', 'test_network_pairing_and_mail']
+             'test_lan_attacks_refused', 'test_bar_width', 'test_network_pairing_and_mail', 'test_network_secret_file']
     tests.sort(key=lambda t: order.index(t[0]) if t[0] in order else 99)
     failed = 0
     try:

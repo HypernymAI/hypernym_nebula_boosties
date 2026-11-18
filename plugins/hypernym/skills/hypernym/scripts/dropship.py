@@ -26,7 +26,7 @@ HOW IT TALKS (LAN)
     the daemon, shown as "distant" in the bar.
 
 FRIENDS ANYWHERE (dropship_mail.py): friends keep talking when they're apart, end-to-end encrypted through a public
-mailbox (ntfy.sh by default). Friends made on the home Wi-Fi swap mailbox keys in their beacons; anyone else pairs
+mailbox (Hypernym's own ntfy server, found through POINTER; ntfy.sh only as a last resort). Friends made on the home Wi-Fi swap mailbox keys in their beacons; anyone else pairs
 once with a short spoken code ("hypernym pair" → 7-neptune-googly-blimp; the other side: "hypernym pair <code>").
 The daemon builds its private environment (PyNaCl + spake2, pinned) with uv on first start; without uv it still
 works on the home Wi-Fi and says so.
@@ -99,6 +99,7 @@ PIDFILE = HOME / 'daemon.pid'
 STOPFILE = HOME / 'daemon.stop'        # the polite way to stop the daemon on every OS (Windows has no SIGTERM to send)
 LOG = HOME / 'daemon.log'
 LISTENERS = HOME / 'listeners'         # <session id>.pid: the background listener of each awake session
+ACTIVE = HOME / 'hosts'                # <app pid>-<app start>.json: the session that app window is on NOW
 OUTBOX = HOME / 'outbox'               # mailbox sends are queued here for the daemon (it holds the crypto)
 PAIRING = HOME / 'pairing.json'        # {code, started}: the pairing the daemon should run now
 VENV = Path(os.environ['DROPSHIP_VENV']) if 'DROPSHIP_VENV' in os.environ else HOME / 'venv'
@@ -282,6 +283,10 @@ class friends_lock:
         except OSError:
             pass
         self.fh.close()
+
+
+def d_policy_scoped(pid: str) -> bool:
+    return friend_policy(pid)['scope'] is not None
 
 
 def friend_policy(pid: str) -> dict:
@@ -577,13 +582,23 @@ def register(sid: str, transcript: str, cwd: str) -> dict:
     term = terminal_of_session()
     if term['tty']:
         r['pid'], r['tty'], r['app'] = term['pid'], term['tty'], term['app'] or r['app']
+    host = host_pid(os.getppid())
+    started = proc_start(host) if host else 0.0
+    if host and started:
+        r['host'], r['host_start'], r['host_app'] = host, started, host_app(host)
     save(SESSIONS / f'{_sid(sid)}.json', r)
+    if host and started:                                # explicit lifecycle binding: SessionStart (startup, resume,
+        ACTIVE.mkdir(exist_ok=True)                     # clear, compact) and every prompt name the window's session
+        save(ACTIVE / f'{host}-{int(started)}.json', {'sid': _sid(sid), 'at': time.time()})
     return r
 
 
 def set_exposed(sid: str, on: bool) -> str:
     r = session_record(sid)
     r['exposed'] = on
+    if on and r['n'] is None:                           # joining starts the read position NOW: everything sent from
+        msgs = inbox()                                  # here on is delivered (never skipped as "old" mail)
+        r['n'] = msgs[-1]['n'] if msgs else 0
     save(SESSIONS / f'{_sid(sid)}.json', r)
     me = identity()['name']
     return (f'Dropship: this session is now reachable as #{me}/{r["name"]}.' if on else
@@ -610,6 +625,117 @@ def terminal_of_session() -> dict:
             break
         pid = ppid
     return {'pid': 0, 'tty': '', 'app': ''}
+
+
+HOST_APPS = ('claude', 'codex', 'claude.exe', 'codex.exe')
+
+
+def _win_processes() -> dict:
+    """pid → (parent pid, exe name), from a Toolhelp snapshot (Windows has no ps). Implemented to spec; untested here."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PE(ctypes.Structure):
+        _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ProcessID', wintypes.DWORD),
+                    ('th32DefaultHeapID', ctypes.c_void_p), ('th32ModuleID', wintypes.DWORD),
+                    ('cntThreads', wintypes.DWORD), ('th32ParentProcessID', wintypes.DWORD),
+                    ('pcPriClassBase', ctypes.c_long), ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_wchar * 260)]
+    k = ctypes.windll.kernel32
+    snap = k.CreateToolhelp32Snapshot(2, 0)
+    out, e = {}, PE()
+    e.dwSize = ctypes.sizeof(PE)
+    ok = k.Process32FirstW(snap, ctypes.byref(e))
+    while ok:
+        out[e.th32ProcessID] = (e.th32ParentProcessID, e.szExeFile.lower())
+        ok = k.Process32NextW(snap, ctypes.byref(e))
+    k.CloseHandle(snap)
+    return out
+
+
+def host_pid(start: int) -> int:
+    """The nearest ancestor (or `start` itself) that is the Claude Code or Codex app: the process that owns a session.
+    Hooks record it at registration; the MCP server's calls resolve to it, so a window can only act as its own session.
+    0 = could not tell (callers going through a tool then refuse)."""
+    if start <= 1:
+        return 0
+    try:
+        procs = _win_processes() if IS_WIN else None
+    except (OSError, AttributeError, ValueError):
+        return 0
+    pid = start
+    for _ in range(12):
+        if IS_WIN:
+            if pid not in procs:
+                return 0
+            ppid, comm = procs[pid]
+        else:
+            out = _run(['ps', '-o', 'ppid=,comm=', '-p', str(pid)]).strip()
+            if not out:
+                return 0
+            ppid_s, _, comm = out.partition(' ')
+            try:
+                ppid = int(ppid_s.strip())
+            except ValueError:
+                return 0
+        if os.path.basename(comm.strip()).lower() in HOST_APPS:
+            return pid
+        pid = ppid
+        if pid <= 1:
+            return 0
+    return 0
+
+
+def host_app(pid: int) -> str:
+    if IS_WIN:
+        try:
+            procs = _win_processes()
+        except (OSError, AttributeError, ValueError):
+            return ''
+        name = procs[pid][1] if pid in procs else ''
+    else:
+        name = _run(['ps', '-o', 'comm=', '-p', str(pid)]).strip()
+    return os.path.basename(name).lower().replace('.exe', '')
+
+
+def proc_start(pid: int) -> float:
+    """When a process started (epoch seconds), so a reused pid is never mistaken for the window that registered."""
+    if IS_WIN:
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, pid)
+            if not h:
+                return 0.0
+            c, e_, kt, ut = (ctypes.c_ulonglong() for _ in range(4))
+            ok = k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e_), ctypes.byref(kt), ctypes.byref(ut))
+            k.CloseHandle(h)
+            return c.value / 1e7 - 11644473600 if ok else 0.0
+        except (OSError, AttributeError):
+            return 0.0
+    try:
+        out = subprocess.run(['ps', '-o', 'lstart=', '-p', str(pid)], capture_output=True, text=True, timeout=3,
+                             env=dict(os.environ, LC_ALL='C', LANG='C')).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 0.0
+    out = ' '.join(out.split())
+    for fmt in ('%a %b %d %H:%M:%S %Y', '%a %d %b %H:%M:%S %Y'):    # month-first or day-first, whatever ps prints
+        try:
+            return time.mktime(time.strptime(out, fmt))
+        except ValueError:
+            continue
+    return 0.0
+
+
+def active_session(host: int, started: float) -> str:
+    """The session this app window is on now, as its own hooks last declared it; '' if unknown or inconsistent."""
+    if not host or not started:
+        return ''
+    a = load(ACTIVE / f'{host}-{int(started)}.json', {})
+    sid = a['sid'] if isinstance(a, dict) and 'sid' in a else ''
+    r = load(SESSIONS / f'{sid}.json', {}) if sid else {}
+    ok = isinstance(r, dict) and 'host' in r and r['host'] == host and 'host_start' in r and \
+        abs(r['host_start'] - started) < 3
+    return sid if ok else ''
 
 
 def transcript_state(path: str) -> str:
@@ -639,12 +765,13 @@ def transcript_state(path: str) -> str:
 
 
 def reachable() -> dict:
-    """sid → record for the sessions others can reach: every session that was added, plus the default one (the most
-    recently used open session)."""
+    """sid → record for the sessions others can reach: ONLY sessions that were added ("hypernym dropship add" or the
+    register action). The default (bare #machine) is the most recently used added session. A session that was never
+    added gets no mail, no notifications and no wake-ups."""
     ss = all_sessions()
     out = {sid: r for sid, r in ss.items() if r['exposed']}
-    open_ = [(r['seen'], sid) for sid, r in ss.items() if r['pid'] and pid_alive(r['pid'])]
-    pool = open_ or [(r['seen'], sid) for sid, r in ss.items()]
+    open_ = [(r['seen'], sid) for sid, r in out.items() if r['pid'] and pid_alive(r['pid'])]
+    pool = open_ or [(r['seen'], sid) for sid, r in out.items()]
     if pool:
         d = max(pool)[1]
         out[d] = dict(ss[d], default=True)
@@ -794,6 +921,26 @@ class Courier:
                           'to_s': to_s, 'owner': owner, 'ts': time.time(), 'body': body})
             log_talk(owner, f'{name}/{from_s}' if from_s else name, 'in')
 
+    # -- secret file transfers (dropship_secret.py): typed mail, never the chat path
+    def secret_allowed(self, pid: str, to_s: str) -> bool:
+        """Pre-buffer check for an incoming secret (nothing is held in memory or on disk unless this passes)."""
+        try:
+            import dropship_secret as ds
+        except ImportError:
+            return False
+        owner = ds.target_owner(pid, '', to_s)
+        scoped = d_policy_scoped(pid)
+        return (bool(owner) or not scoped) and ds.authorized(pid, owner) == ''
+
+    def secret_mail(self, kind: str, pid: str, name: str, body: str, to_s: str) -> None:
+        import dropship_secret
+        if kind == 'secret':
+            dropship_secret.secret_in(self, pid, name, body, to_s)
+        elif kind == 'secret-receipt':
+            dropship_secret.receipt_in(self, pid, body)
+        elif kind == 'secret-refused':
+            log(f'secret mail from {pid} refused before buffering (not allowed for {to_s or "its default session"})')
+
     # -- wake idle Codex sessions when mail arrives for them (no dropship_wait loop needed)
     def wake_loop(self):
         """Every WAKE_CHECK_S: for each reachable Codex session with unread mail routed to it, queue one short wake-up
@@ -804,7 +951,15 @@ class Courier:
         # sid → [newest owned inbox line, tries, last wake time]; kept on disk so a courier restart never re-wakes for
         # mail it already woke a session about (a busy Codex thread runs the queued wake later — don't stack more).
         tried = {k: tuple(v) for k, v in load(HOME / 'wakes.json', {}).items()}
+        last_sweep = 0.0
         while not self.stop.wait(WAKE_CHECK_S):
+            if time.time() - last_sweep > 60:
+                last_sweep = time.time()
+                try:
+                    import dropship_secret
+                    dropship_secret.sweep()
+                except ImportError:
+                    pass
             if not config()['enabled'] or not config()['wake_codex']:
                 continue
             codex = codex_bin()
@@ -881,7 +1036,7 @@ class Courier:
             disk = load(FRIENDS, {})
             for pid, f in self.friends.items():
                 if pid in disk:
-                    for k in ('scope', 'blocked', 'scoped_by'):
+                    for k in ('scope', 'blocked', 'scoped_by', 'secrets', 'approvals'):
                         if k in disk[pid]:
                             f[k] = disk[pid][k]
                         else:
@@ -966,10 +1121,24 @@ class Courier:
                     job['filename'] = req.name
                     job['to_id'] = friend['id']
                     save(req, job)
-                    self.mail.send(friend, job['body'], 'msg', job.get('to_s', ''), job.get('from_s', ''), job=job)
-                    append_inbox({'dir': 'out', 'via': 'mailbox', 'from': self.me['name'], 'from_s': job.get('from_s', ''),
-                                  'to': friend['name'], 'to_s': job.get('to_s', ''), 'session': job.get('sid', ''),
-                                  'ts': time.time(), 'body': job['body']})
+                    kind = job['kind'] if 'kind' in job else 'msg'
+                    if kind == 'secret':                # the courier reads the file now; only its id is ever logged
+                        import dropship_secret
+                        body = dropship_secret.build_payload(job['secret_id'])
+                        shown = f"[secret file] {job['secret_id']} sent (contents not shown)"
+                    elif kind == 'secret-receipt':
+                        body = json.dumps({'id': job['secret_id'], 'status': job['receipt'],
+                                           'sha': job['sha'] if 'sha' in job else ''})
+                        shown = ''
+                    else:
+                        body = shown = job['body']
+                    self.mail.send(friend, body, kind, job.get('to_s', ''), job.get('from_s', ''), job=job)
+                    if kind == 'secret':
+                        dropship_secret.sent_status(job['secret_id'], 'sent')
+                    if shown:
+                        append_inbox({'dir': 'out', 'via': 'mailbox', 'from': self.me['name'], 'from_s': job.get('from_s', ''),
+                                      'to': friend['name'], 'to_s': job.get('to_s', ''), 'session': job.get('sid', ''),
+                                      'ts': time.time(), 'body': shown})
                     result = 'ok'
                 except MailboxDeferred as e:
                     retry_at = e.retry_at
@@ -1418,6 +1587,112 @@ def where(v: dict) -> str:
     return {'lan': 'home wi-fi', 'mail': 'mailbox'}[v['kind']] if v['kind'] in ('lan', 'mail') else v['label']
 
 
+NOT_ADDED = ('Dropship: this window is not added to Dropship, so it cannot send, read or wait. Ask your user to give '
+             'this session a clear name with /rename first; when they say it is done, call dropship_local with action '
+             '"register" (it checks the name and adds this session).')
+SENT_LOG = HOME / 'sent.jsonl'                     # audit: every send to a restricted peer, under which approval
+
+
+def restricted(f: dict) -> bool:
+    """A friend whose sends need an approved item: it has an approvals list, or it was paired through a tracer."""
+    return 'approvals' in f or ('scoped_by' in f and f['scoped_by'] == 'tracer')
+
+
+def approvals_of(f: dict) -> list:
+    return [a for a in f['approvals'] if isinstance(a, dict) and 'item' in a] if 'approvals' in f and \
+        isinstance(f['approvals'], list) else []
+
+
+def approval_for(f: dict, under: str) -> str:
+    """The approved item a send names (its text, any case, or its number in the list), else ''."""
+    under = ' '.join(under.split()).lower()
+    if not under:
+        return ''
+    items = approvals_of(f)
+    for i, a in enumerate(items, 1):
+        if under == a['item'].lower() or under == str(i):
+            return a['item']
+    return ''
+
+
+def approval_refusal(name: str, f: dict) -> str:
+    items = approvals_of(f)
+    listed = '; '.join(f'{i}. {a["item"]}' for i, a in enumerate(items, 1)) or 'none yet'
+    return (f'Not sent: #{name} is restricted, so every message must name the approved item it is sent under '
+            f'(dropship_send `under`). Approved for #{name}: {listed}. If this message is outside those items, send '
+            f'the part that is covered, and put a one-line ask in front of your user: who (#{name}), what, what for, '
+            f'where the data lives. Only your user can approve, by typing: hypernym dropship approve {name} <item>')
+
+
+def audit(pid: str, name: str, to_s: str, sid: str, item: str, body: str) -> None:
+    _private_dir()
+    with _inbox_lock:
+        fd = os.open(SENT_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'a') as f:
+            f.write(json.dumps({'ts': time.time(), 'to': name, 'to_id': pid, 'to_s': to_s,
+                                'session': session_record(sid)['name'] if sid else '(terminal)', 'item': item,
+                                'bytes': len(body.encode()), 'sha256': hashlib.sha256(body.encode()).hexdigest()}) + '\n')
+
+
+def approvals_command(verb: str, args: str, typed_in: str) -> str:
+    """hypernym dropship approve|revoke|approvals|sent — ONLY from a prompt the person typed (the prompt hook); no agent
+    tool and no CLI command can change approvals."""
+    words = args.split()
+    friends = load(FRIENDS, {})
+    labels = friend_names(friends)
+    if verb == 'approvals' and not words:
+        rows = [f"#{labels[pid] if pid in labels else f['name']}: " +
+                ('; '.join(f"{i}. {a['item']}" for i, a in enumerate(approvals_of(f), 1)) or 'none (nothing may be sent)')
+                for pid, f in friends.items() if restricted(f)]
+        return 'Dropship approvals:\n' + ('\n'.join(rows) if rows else '(no restricted friends)')
+    if not words:
+        return f'Dropship: say which friend, e.g. "hypernym dropship {verb} nick …"'
+    peer = words[0].lstrip('#').lower()
+    hits = [pid for pid in friends if pid == peer or (pid in labels and labels[pid] == peer)]
+    if len(hits) != 1:
+        return f'Dropship: no single friend called {words[0]}. Friends: ' + ', '.join(sorted(labels.values()))
+    pid, rest = hits[0], ' '.join(words[1:])
+    label = labels[pid] if pid in labels else friends[pid]['name']
+    if verb == 'sent':
+        rows = []
+        for ln in (SENT_LOG.read_text().splitlines() if SENT_LOG.exists() else []):
+            try:
+                e = json.loads(ln)
+            except ValueError:
+                continue
+            if e['to_id'] == pid:
+                rows.append(f"{time.strftime('%m-%d %H:%M', time.localtime(e['ts']))}  from {e['session']}  under "
+                            f"\"{e['item']}\"  ({e['bytes']} bytes)")
+        return f'Dropship: sent to #{label} (latest 20):\n' + ('\n'.join(rows[-20:]) if rows else '(nothing yet)')
+    if verb == 'approvals':
+        items = approvals_of(friends[pid])
+        return f'Dropship: approved for #{label}: ' + ('; '.join(f"{i}. {a['item']}" for i, a in enumerate(items, 1))
+                                                     or 'none (nothing may be sent)')
+    if not rest:
+        return f'Dropship: say what, e.g. "hypernym dropship {verb} {label} the Granite write-up"'
+    with friends_lock():
+        friends = load(FRIENDS, {})
+        f = friends[pid]
+        items = approvals_of(f)
+        if verb == 'approve':
+            follow = rest.endswith(' --followups')
+            item = clean(rest[:-len(' --followups')] if follow else rest, 200)
+            items = [a for a in items if a['item'].lower() != item.lower()] + [
+                {'item': item, 'at': time.time(), 'by': f'typed in {typed_in}', 'followups': follow}]
+            msg = f'Dropship: #{label} may now be sent: "{item}"' + (' (and follow-ups on it)' if follow else '') + '.'
+        else:
+            target = rest.lower()
+            keep = [a for i, a in enumerate(items, 1) if not (target in ('all', a['item'].lower(), str(i)))]
+            if len(keep) == len(items):
+                return f'Dropship: #{label} has no approval "{rest}". Approved: ' + \
+                    ('; '.join(f"{i}. {a['item']}" for i, a in enumerate(items, 1)) or 'none')
+            items, msg = keep, f'Dropship: revoked for #{label}: {rest}.'
+        f['approvals'] = items
+        save(FRIENDS, friends)
+    log(f'approvals for {pid}: {verb} {rest!r} (typed in {typed_in})')
+    return msg + ' Now approved: ' + ('; '.join(f"{i}. {a['item']}" for i, a in enumerate(items, 1)) or 'none') + '.'
+
+
 def send_mail(name: str, body: str, to_s: str = '', from_s: str = '', sid: str = '', peer_id: str = '') -> str:
     """Queue a mailbox send for the daemon (it holds the keys) and wait for its answer."""
     _private_dir()
@@ -1444,9 +1719,11 @@ def send(to: str, body: str, sid: str = '') -> str:
     to it, and the talk is logged for `sessions`)."""
     to, body = resolve_target(to), clean(body)
     to, _, to_s = to.partition('/')
-    if sid:                                             # sending is using the session, and makes it reachable:
-        r = session_record(sid)                         # the reply comes back HERE
-        r['exposed'], r['seen'] = True, time.time()
+    if sid:                                             # only an ADDED session may send (sending no longer adds it)
+        r = session_record(sid)
+        if not r['exposed']:
+            return NOT_ADDED
+        r['seen'] = time.time()
         save(SESSIONS / f'{_sid(sid)}.json', r)
     if to_s and not SESSION_RE.match(to_s):
         return f'#{to}/{to_s}: not a session name'
@@ -1455,7 +1732,11 @@ def send(to: str, body: str, sid: str = '') -> str:
         return 'nothing to send'
     me = identity()
     if to == me['name']:                                 # another session on this same computer: any session by name
-        named = [(r['seen'], k) for k, r in all_sessions().items() if to_s and r['name'] == to_s and k != _sid(sid)]
+        named = [(r['seen'], k) for k, r in reachable().items()
+                 if to_s and (r['name'] == to_s or to_s in (r['aliases'] if 'aliases' in r else [])) and k != _sid(sid)]
+        if to_s and not named:
+            names = ', '.join(f"#{me['name']}/{x}" for x in advertised_sessions()) or 'none'
+            return f"#{me['name']}/{to_s}: no added session by that name here (reachable: {names})"
         owner = max(named)[1] if named else owner_of(to_s, me['name'])
         if not owner or owner == _sid(sid):
             names = ', '.join(f"#{me['name']}/{x}" for x in advertised_sessions()) or 'none'
@@ -1476,6 +1757,19 @@ def send(to: str, body: str, sid: str = '') -> str:
     targets = list(d) if to == 'all' else [to]
     if to != 'all' and to not in d:
         return f"#{to} isn't reachable right now. Here: {', '.join('#' + n for n in sorted(d)) or 'nobody'}"
+    friends_now = load(FRIENDS, {})
+    restricted_labels = {lab for p_, lab in friend_names(friends_now).items() if restricted(friends_now[p_])}
+    for name in targets:                                # restricted peers: every send names Chris's approved item
+        pid = d[name]['id'] if 'id' in d[name] else ''
+        if not pid and name in restricted_labels:
+            return f'#{name} is a restricted friend; it can only be reached on its own authenticated route.'
+        if pid and pid in friends_now and restricted(friends_now[pid]):
+            if to == 'all':
+                return f'#{name} is restricted (approved items only); send to it by name, with the approved item.'
+            item = approval_for(friends_now[pid], os.environ['DROPSHIP_UNDER'] if 'DROPSHIP_UNDER' in os.environ else '')
+            if not item:
+                return approval_refusal(name, friends_now[pid])
+            audit(pid, name, to_s, sid, item, body)
     me, friends, sent = identity(), load(FRIENDS, {}), []
     for name in targets:
         t = d[name]
@@ -1941,6 +2235,9 @@ def set_borg(sid: str, on: bool) -> dict:
     r['borg'] = on
     if on:
         r['exposed'] = True
+        if r['n'] is None:
+            msgs = inbox()
+            r['n'] = msgs[-1]['n'] if msgs else 0
     save(SESSIONS / f'{_sid(sid)}.json', r)
     return r
 
@@ -1959,7 +2256,8 @@ def resolve_target(target: str) -> str:
     return target
 
 
-CMD_RE = re.compile(r'^hypernym\s+dropship\s+(add|remove|sessions|awake|borg|scope|trust|block|unblock|friends)\b\s*(.*)$',
+CMD_RE = re.compile(r'^hypernym\s+dropship\s+(add|remove|sessions|awake|borg|scope|trust|block|unblock|friends|approve|'
+                    r'revoke|approvals|sent)\b\s*(.*)$',
                     re.I | re.S)
 HASH_RE = re.compile(r'^#([a-z0-9][a-z0-9._-]{0,31}(?:/[a-z0-9][a-z0-9._-]{0,31})?)\s+(.+)$', re.S | re.I)
 
@@ -1986,6 +2284,9 @@ def hook_prompt(raw: str) -> str:
         r = set_borg(sid, True)                         # through to Claude: it starts the loop right now
         return through(borg_note(r) + '\nStart now: tell your user in one line that borg mode is on, then call '
                        'dropship_wait.')
+    if cmd and cmd.group(1).lower() in ('approve', 'revoke', 'approvals', 'sent'):
+        result = approvals_command(cmd.group(1).lower(), cmd.group(2) or '', addr(identity()['name'], rec['name']))
+        return json.dumps({'decision': 'block', 'reason': result})
     if cmd and cmd.group(1).lower() in ('scope', 'trust', 'block', 'unblock', 'friends'):
         verb, args = cmd.group(1).lower(), (cmd.group(2) or '').split()
         if verb == 'friends':
@@ -2004,6 +2305,8 @@ def hook_prompt(raw: str) -> str:
                   else sessions_text() if verb == 'sessions' else awake(arg) if arg
                   else 'Dropship: say which session, e.g. "hypernym dropship awake scout".')
         return json.dumps({'decision': 'block', 'reason': result})
+    if not rec['exposed'] and not rec['borg']:
+        return ''                                       # not added: no Dropship mail or notices in this window
     new = unread_for(sid)
     me = identity()['name']
     if rec['borg']:                                     # remembered: after this prompt, go back into the loop
@@ -2019,6 +2322,8 @@ def friends_text() -> str:
     friends = load(FRIENDS, {})
     labels = friend_names(friends)
     rows = [f"#{labels[pid] if pid in labels else f['name']}  ({pid}, {f['how'] if 'how' in f else '?'})  {policy_text(f)}"
+            + (('\n      approved: ' + ('; '.join(f"{i}. {a['item']}" for i, a in enumerate(approvals_of(f), 1))
+                                         or 'nothing yet (no sends until your user approves)')) if restricted(f) else '')
             for pid, f in sorted(friends.items(), key=lambda kv: kv[1]['name'])]
     return 'Dropship friends:\n' + ('\n'.join(rows) if rows else '(none)')
 
@@ -2128,10 +2433,34 @@ def session_for_cwd(cwd: str) -> str:
 
 
 def calling_session() -> str:
-    """Bind MCP operations to one session; never guess between tasks in the same folder."""
+    """Bind MCP operations to one session; never guess between tasks in the same folder. Through a tool (the MCP
+    server sets DROPSHIP_MCP_PID) the session is the one owned by the calling window's own Claude Code / Codex process:
+    a window can only act as itself, and an as_session naming another session is refused."""
     ss = all_sessions()
-    sid = os.environ.get('DROPSHIP_SESSION') or os.environ.get('CODEX_THREAD_ID', '')
     name = os.environ.get('DROPSHIP_AS', '')
+    mcp = os.environ['DROPSHIP_MCP_PID'] if 'DROPSHIP_MCP_PID' in os.environ else ''
+    if mcp:                                             # through a tool: identity comes from the process, never a name
+        host = host_pid(int(mcp)) if mcp.isdigit() else 0
+        started = proc_start(host) if host else 0.0
+        if not host or not started:
+            sys.exit('Dropship: cannot verify which window is calling, so Dropship tools are refused here. Ask your '
+                     'user to run this from a Claude Code or Codex window.')
+        mine = {k for k, r in ss.items()
+                if 'host' in r and r['host'] == host and 'host_start' in r and abs(r['host_start'] - started) < 3}
+        if host_app(host) == 'codex' and len(mine) > 1:
+            # one Codex app can hold several threads; its MCP calls don't say which one is asking
+            sys.exit('Dropship: several Codex threads share this app, so which one is calling cannot be verified. '
+                     'Use one Codex thread per app window for Dropship.')
+        sid = active_session(host, started)
+        if not sid or sid not in mine:
+            sys.exit('Dropship: this window is not registered yet. Ask your user to type any prompt in it (after '
+                     '/rename), then try again.')
+        r = ss[sid]
+        if name and name != r['name'] and name not in (r['aliases'] if 'aliases' in r else []):
+            sys.exit(f'Dropship: as_session "{name}" is not this window. This window is '
+                     f'#{identity()["name"]}/{r["name"]}; a window can only act as itself.')
+        return sid
+    sid = os.environ.get('DROPSHIP_SESSION') or os.environ.get('CODEX_THREAD_ID', '')
     if sid:
         if sid not in ss or (name and ss[sid]['name'] != name):
             sys.exit('Dropship: current session identity is missing or mismatched; refresh registration first.')
@@ -2291,6 +2620,53 @@ def main() -> int:
     if a == ['friends']:
         print(friends_text())
         return 0
+    if a and a[0].startswith('secret-'):
+        try:
+            import nacl  # noqa: F401  (secret commands need the crypto environment)
+        except ImportError:
+            if venv_ready() and Path(sys.prefix).resolve() != VENV.resolve():
+                os.execv(str(venv_python()), [str(venv_python()), str(Path(__file__).resolve()), *a])
+            print('Dropship: secret files need the crypto environment (start the courier once: dropship.py on).')
+            return 1
+        import dropship_secret as ds
+        flags = {x for x in a if x.startswith('--')}
+        opt = lambda name: a[a.index(name) + 1] if name in a and a.index(name) + 1 < len(a) else ''
+        valued = {opt(f) for f in ('--label', '--key', '--session', '--dest') if opt(f)}
+        args = [x for x in a[1:] if not x.startswith('--') and x not in valued]
+        # the calling session (MCP passes DROPSHIP_AS / DROPSHIP_SESSION, a terminal passes --session); list, install and
+        # discard refuse without one
+        csid = os.environ['DROPSHIP_SESSION'] if 'DROPSHIP_SESSION' in os.environ and os.environ['DROPSHIP_SESSION'] else ''
+        if 'DROPSHIP_MCP_PID' in os.environ:            # through a tool: only this window's own session
+            csid = calling_session()
+            if not session_record(csid)['exposed']:
+                print(NOT_ADDED)
+                return 1
+        want = opt('--session') if a[0] != 'secret-allow' and 'DROPSHIP_MCP_PID' not in os.environ else ''
+        want = want or (os.environ['DROPSHIP_AS'] if not csid and 'DROPSHIP_AS' in os.environ else '')
+        if want and not csid:
+            named = [(r['seen'], k) for k, r in all_sessions().items() if r['name'] == want.lstrip('#').split('/')[-1]]
+            if not named:
+                print(f'Dropship: no local session called {want}.')
+                return 1
+            csid = max(named)[1]
+        try:
+            if a[0] == 'secret-offer' and len(args) == 2:
+                print(ds.offer(args[0], args[1], opt('--label'), '--move' in flags, csid))
+            elif a[0] in ('secret-allow', 'secret-deny') and len(args) == 1:
+                print(ds.grant(args[0], a[0] == 'secret-allow', opt('--session'), opt('--dest')))
+            elif a[0] == 'secret-list':
+                print(ds.pending(csid))
+            elif a[0] == 'secret-install' and len(args) == 2:
+                print(ds.install(args[0], args[1], opt('--key'), '--overwrite' in flags, csid))
+            elif a[0] == 'secret-discard' and len(args) == 1:
+                print(ds.discard(args[0], csid))
+            else:
+                print(ds.__doc__)
+                return 1
+        except (ValueError, OSError) as e:
+            print(f'Dropship: {e}')
+            return 1
+        return 0
     if a in (['hot-update'], ['hot-update', '--sync-only']):
         print(hot_update(managers=a == ['hot-update']))
         return 0
@@ -2340,8 +2716,33 @@ def main() -> int:
     if a == ['peers']:
         print(json.dumps({n: where(v) for n, v in directory().items()}))
         return 0
+    if a == ['register']:
+        sid = calling_session()
+        r = session_record(sid)
+        me = identity()['name']
+        if not r['title'] or r['name'] == _sid(sid)[:8].lower():
+            print('Dropship: this session has no name yet. Ask your user to /rename it to a clear name (for example '
+                  '/rename billing-api), then to tell you when it is done, and call register again.')
+            return 1
+        clash = [k for k, x in all_sessions().items() if k != sid and x['exposed'] and x['name'] == r['name']
+                 and x['pid'] and pid_alive(x['pid'])]
+        if clash:
+            print(f'Dropship: another open window already uses #{me}/{r["name"]}. Ask your user to /rename this one '
+                  'to a different name, then call register again.')
+            return 1
+        set_exposed(sid, True)
+        listed = r['name'] in advertised_sessions()
+        print(f'Dropship: registered. This session is #{me}/{r["name"]}' +
+              (' and appears in "dropship sessions".' if listed else '; it is not listed yet — run status again.'))
+        return 0 if listed else 1
+    if a == ['read', '--all'] and 'DROPSHIP_MCP_PID' in os.environ:
+        print('Dropship: reading every session\'s mail is not available to agents. Use dropship_read for this session.')
+        return 1
     if a in (['read'], ['read', '--all']) or (a[:1] == ['wait'] and len(a) <= 2):
         sid = calling_session() if a != ['read', '--all'] else ''
+        if sid and not session_record(sid)['exposed']:
+            print(NOT_ADDED)
+            return 1
         rec = session_record(sid) if sid else {'name': ''}
         me = addr(identity()['name'], rec['name']) if sid else ''
         if a[0] == 'wait':

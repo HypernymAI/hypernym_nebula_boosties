@@ -15,6 +15,13 @@ CONTROL = 'dropship-tracer-v1:'
 
 def current_session(name=''):
     ss = d.all_sessions()
+    if os.environ.get('DROPSHIP_MCP_PID'):              # through a tool: only this window's own session
+        sid = d.calling_session()
+        r = d.register(sid, ss[sid]['transcript'], ss[sid]['cwd'])
+        d.set_exposed(sid, True)
+        if r['n'] is None:
+            d.unread_for(sid)
+        return sid, r
     sid = os.environ.get('DROPSHIP_SESSION') or os.environ.get('CODEX_THREAD_ID', '')
     if sid and sid not in ss:
         raise ValueError('This session is not registered yet. Resume the agent with the Hypernym hooks enabled.')

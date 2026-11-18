@@ -2,31 +2,95 @@
   "description": "hypernym: keep the status line launcher current; tell each new, resumed, cleared or compacted session about this repo's analysis; remember which package a session loaded (local only, never the network); in Codex, show the Zephyr status row in the conversation. Dropship: start the local courier on session start (it only talks on home networks); \"#name text\" prompts go to that agent; new Dropship messages are shown to Claude as data.",
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_start.py\"" } ] },
-      { "matcher": "startup|resume|clear|compact",
-        "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_context.py\"" } ] },
-      { "matcher": "startup|resume|clear",
-        "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/codex_status.py\"" } ] },
-      { "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "py=python3; $py -c 1 2>/dev/null || py=python; $py \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" ensure" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Hypernym: status line",
+            "timeout": 10,
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_start.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Hypernym: repo context",
+            "timeout": 10,
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/session_context.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Hypernym: Zephyr status",
+            "timeout": 10,
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/codex_status.py\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Dropship: start courier",
+            "timeout": 10,
+            "command": "py=python3; $py -c 1 2>/dev/null || py=python; $py \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" ensure"
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "py=python3; $py -c 1 2>/dev/null || py=python; $py \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/update_prompt.py\"" } ] },
-      { "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "py=python3; $py -c 1 2>/dev/null || py=python; $py \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" hook-prompt" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Hypernym: update routing",
+            "timeout": 10,
+            "command": "py=python3; $py -c 1 2>/dev/null || py=python; $py \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/update_prompt.py\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Dropship: messages",
+            "timeout": 10,
+            "command": "py=python3; $py -c 1 2>/dev/null || py=python; $py \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/dropship.py\" hook-prompt"
+          }
+        ]
+      }
     ],
     "PostToolUse": [
-      { "matcher": "Bash|mcp__.*hypernym_load",
-        "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/record_load.py\"" } ] }
+      {
+        "matcher": "Bash|mcp__.*hypernym_load",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Hypernym: remember loaded package",
+            "timeout": 10,
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/record_load.py\""
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "timeout": 10,
-                     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/codex_status.py\"" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Hypernym: Zephyr status",
+            "timeout": 10,
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/hypernym/scripts/codex_status.py\""
+          }
+        ]
+      }
     ]
   }
 }
