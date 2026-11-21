@@ -2368,6 +2368,26 @@ NO_FILE_SESSION = ('Dropship: say which session is asking: through a tool it is 
                    'in a terminal pass --session NAME.')
 
 
+def file_wait(tid: str, wait_s: int, as_json: bool) -> int:
+    """Status of an offer this computer sent, optionally waiting for its receipt. Same JSON and exit codes as
+    file-offer --wait (0 saved, 1 refused/failed, 2 unknown id, 3 still waiting)."""
+    import dropship_files as df
+    try:
+        rec = df.out_record(tid)
+    except ValueError:
+        print(json.dumps({'id': tid, 'status': 'unknown'}) if as_json else f'Dropship: no sent file {tid}.')
+        return 2
+    deadline = time.time() + wait_s
+    while wait_s and rec['status'] == 'offered' and time.time() < deadline:
+        time.sleep(1)
+        rec = df.out_record(tid)
+    status = rec['status'] if rec['status'] != 'offered' else ('timeout' if wait_s else 'offered')
+    out = {'id': tid, 'status': status, 'sha256': rec['sha256'], 'size': rec['size'], 'name': rec['name'],
+           'to': f"{rec['to']}/{rec['to_s']}" if rec['to_s'] else rec['to']}
+    print(json.dumps(out) if as_json else f"{tid} {json.dumps(rec['name'])}: {status}")
+    return 0 if status == 'saved' else 3 if status in ('timeout', 'offered') else 1
+
+
 def file_offer_wait(path: str, to: str, sid: str, label: str, wait_s: int, as_json: bool) -> int:
     """For scripts (no agent): offer, optionally block until the signed receipt, report as JSON.
     Exit 0 = saved (receiver verified the sha256), 1 = refused/failed, 2 = not offered, 3 = no receipt in time."""
@@ -3740,6 +3760,9 @@ def main() -> int:
     if a and a[0] == 'pair' and len(a) <= 2:
         print(pair(a[1] if len(a) == 2 else ''))
         return 0
+    if a and a[0] == 'file-wait' and len(a) >= 2:      # scripts: keep waiting on an offer already sent
+        opt = lambda name: a[a.index(name) + 1] if name in a and a.index(name) + 1 < len(a) else ''
+        return file_wait(a[1], int(opt('--wait')) if opt('--wait').isdigit() else 0, '--json' in a)
     if a and a[0] in ('file-offer', 'file-list', 'file-accept', 'file-refuse'):
         under_tool = any(k in os.environ and os.environ[k] for k in ('DROPSHIP_MCP_PID', 'DROPSHIP_SESSION', 'DROPSHIP_AS'))
         sid = calling_session() if under_tool else ''
