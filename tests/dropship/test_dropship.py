@@ -548,6 +548,19 @@ def test_network_file_direct(a, b, c, d):
     check(notes and all(len(x['body']) < 600 for x in notes), 'only short one-line notices about the file')
 
 
+def test_network_file_script_wait(a, b, c, d):
+    """--network: an unattended script (no agent, no session) offers a file, blocks until the signed receipt and gets it
+    as JSON; exit 0 only when the receiver verified and saved it. Needs carol's auto flag from test_network_file_direct."""
+    import hashlib
+    blob = os.urandom(3 * 1024 * 1024)
+    src = a.home.parent / 'alice-project' / 'batch-0001.tar'
+    src.parent.mkdir(exist_ok=True)
+    src.write_bytes(blob)
+    out = a.cli('file-offer', str(src), '#carol', '--label', 'fn7-batch-0001', '--wait', '120', '--json')
+    r = json.loads(out.strip().splitlines()[-1])
+    check(r['status'] == 'saved' and r['sha256'] == hashlib.sha256(blob).hexdigest() and r['id'].startswith('fx_'), out)
+
+
 def test_network_long_message_as_file(a, b, c, d):
     """--network: a message longer than one message is delivered as ONE file plus a one-line notice."""
     sender = a.session('a-files-22', 'Files')

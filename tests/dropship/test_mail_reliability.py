@@ -12,6 +12,8 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'plugins/hypernym/skills/hypernym/scripts'))
+import os as _os, tempfile as _tf  # noqa: E401,E402
+_os.environ['DROPSHIP_HOME'] = _tf.mkdtemp(prefix='dropship-test-')   # never the real Dropship home
 import dropship as d
 import dropship_mail as mail
 import nacl.public

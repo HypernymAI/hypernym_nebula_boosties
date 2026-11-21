@@ -2368,6 +2368,31 @@ NO_FILE_SESSION = ('Dropship: say which session is asking: through a tool it is 
                    'in a terminal pass --session NAME.')
 
 
+def file_offer_wait(path: str, to: str, sid: str, label: str, wait_s: int, as_json: bool) -> int:
+    """For scripts (no agent): offer, optionally block until the signed receipt, report as JSON.
+    Exit 0 = saved (receiver verified the sha256), 1 = refused/failed, 2 = not offered, 3 = no receipt in time."""
+    import dropship_files as df
+    text = file_offer_cli(path, to, sid, label)
+    m = re.search(r'(fx_[0-9a-f]{16})', text)
+    if not m or 'offered' not in text:
+        print(json.dumps({'id': '', 'status': 'not-offered', 'error': text}) if as_json else text)
+        return 2
+    tid = m.group(1)
+    status = 'offered'
+    deadline = time.time() + wait_s
+    while wait_s and time.time() < deadline:
+        status = df.out_record(tid)['status']
+        if status in ('saved', 'refused', 'failed', 'cancelled'):
+            break
+        time.sleep(1)
+    rec = df.out_record(tid)
+    status = rec['status'] if rec['status'] != 'offered' or not wait_s else ('timeout' if wait_s else 'offered')
+    result = {'id': tid, 'status': status, 'sha256': rec['sha256'], 'size': rec['size'], 'name': rec['name'],
+              'to': to.lstrip('#')}
+    print(json.dumps(result) if as_json else f'{text}\nreceipt: {status}')
+    return 0 if status == 'saved' else 3 if status == 'timeout' else (0 if status == 'offered' else 1)
+
+
 def file_list(sid: str) -> str:
     """Files offered to THIS session (incoming) and sent by it (outgoing). Never another session's."""
     import dropship_files as df
@@ -3720,6 +3745,8 @@ def main() -> int:
         sid = calling_session() if under_tool else ''
         opt = lambda name: a[a.index(name) + 1] if name in a and a.index(name) + 1 < len(a) else ''
         valued = {opt(x) for x in ('--label', '--dest', '--session') if opt(x)}
+        if opt('--wait').isdigit():
+            valued.add(opt('--wait'))
         args = [x for x in a[1:] if not x.startswith('--') and x not in valued]
         if a[0] != 'file-offer':                        # list / accept / refuse: always as one named session
             if sid and not session_record(sid)['exposed']:
@@ -3736,6 +3763,10 @@ def main() -> int:
                 print(NO_FILE_SESSION)
                 return 1
         try:
+            if a[0] == 'file-offer' and len(args) == 2 and ('--wait' in a or '--json' in a):
+                return file_offer_wait(args[0], args[1], sid, opt('--label'),
+                                       int(opt('--wait')) if opt('--wait').isdigit() else (3600 if '--wait' in a else 0),
+                                       '--json' in a)
             if a[0] == 'file-offer' and len(args) == 2:
                 print(file_offer_cli(args[0], args[1], sid, opt('--label')))
             elif a[0] == 'file-list':

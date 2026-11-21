@@ -11,6 +11,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'plugins/hypernym/skills/hypernym/scripts'))
+import os as _os, tempfile as _tf  # noqa: E401,E402
+_os.environ['DROPSHIP_HOME'] = _tf.mkdtemp(prefix='dropship-test-')   # never the real Dropship home
 import dropship as d
 import dropship_tracer as t
 import codex_status as status
