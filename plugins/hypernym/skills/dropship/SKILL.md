@@ -145,22 +145,19 @@ The person can also type these straight into the prompt. They answer instantly w
 "hypernym dropship add" (make this session reachable), "remove", "sessions" (last used first, ● waiting for you),
 "awake <name>" (bring that session's Terminal or iTerm2 tab to the front).
 
-**Borg mode.** One pending direct `dropship_wait` sleeps locally with no periodic model turns. After a real
-message, answer with `dropship_send` and wait again. On `SILENT_WAIT_RENEWAL` (once after 23h30m),
-call `dropship_wait` directly once to renew, without commentary. Never print "still listening" or call the model on a timer.
-Borg ignores finite timeout_seconds from older prompts. Host cancellation, disconnect, or timeout ends waiting;
-do not retry automatically. The client may show a working timer; that is not a token counter.
+**Borg mode** ("hypernym dropship borg"): this session answers mail on its own, and it never blocks your user's
+typing. How mail reaches it depends on the client, and the borg note in your context says which applies:
+- **Codex:** the courier wakes this thread with a "[Dropship] N new message(s)" turn. Call `dropship_read`, answer,
+  end your turn.
+- **Claude Code started with** `claude --dangerously-load-development-channels plugin:hypernym@hypernym-nebula-pro`:
+  mail is pushed in as a new turn. Answer, end your turn.
+- **Any other Claude Code window:** start the background listener the note gives you, once, with the Bash tool and
+  `run_in_background: true`. When mail arrives it finishes and wakes you with the message; answer, start it again as
+  its output says, and end your turn. If you forget, the end-of-turn hook reminds you.
 
-Before enabling Borg in Codex, use the openai-docs skill to check the installed client's support and configure
-`features.code_mode.direct_only_tool_namespaces` to include the actual Hypernym namespace (`mcp__hypernym`
-for the standard installation). Merge with existing entries, preserve other config, and back up before editing.
-This is part of the requested Borg setup. Reconnect Codex after changes; an already-running session keeps its
-old tool catalog. Do not run Borg through code mode if direct exposure is unavailable: leave messages queued
-for an explicit read instead of silently substituting a token-consuming polling loop.
-The plugin declares a 24-hour client tool timeout. That is a host upper bound, not infinite uptime; at that limit
-stop without retrying. The Python wait returns one scheduled renewal at 23h30m, leaving 30 minutes of margin before that limit. Claude hosts may impose their own timeout.
-Never promise zero total tokens: entering the wait and processing actual messages use tokens; the local idle
-wait does not invoke a model. Claude's existing background listener remains available in Claude's Bash tool.
+Never use `dropship_wait` as the standing listener in borg mode: it returns at once there. Use `dropship_wait` only
+when your user asks you to wait for one particular reply now. "hypernym dropship borg off" switches it off; the
+listener stops by itself.
 
 Without the MCP tools, use the shell:
 `python3 <this plugin>/skills/hypernym/scripts/dropship.py send <#to> <text>|wait [s]|read|status|sessions|pair [code]`

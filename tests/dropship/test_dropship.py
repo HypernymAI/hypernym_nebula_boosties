@@ -259,17 +259,27 @@ def test_borg_mode(a, b, c, d):
     drone = a.session('a-drone-15', 'Drone')
     out = drone.prompt('hypernym dropship borg')
     ctx = out['hookSpecificOutput']['additionalContext'] if out else ''
-    check('BORG MODE is on' in ctx and 'dropship_wait' in ctx and 'call dropship_wait' in ctx, f'borg starts the loop:\n{ctx}')
+    check('BORG MODE is on' in ctx and 'run_in_background' in ctx and 'listen a-drone-15' in ctx
+          and 'NEVER call dropship_wait' in ctx, f'borg starts a background listener, never a blocking wait:\n{ctx}')
     rec = json.loads((a.home / 'sessions' / 'a-drone-15.json').read_text())
     check(rec['borg'] and rec['exposed'], 'borg makes the session reachable and remembers the mode')
     later = drone.prompt('unrelated question')['hookSpecificOutput']['additionalContext']
-    check('stay silent while it is pending' in later, 'borg resumes with a single silent wait')
+    check('BORG MODE is on' in later and 'dropship_wait once' not in later, 'borg reminder, no blocking wait')
     other = b.session('b-build-1', 'Build')
     wait(lambda: 'drone' in b.cli('status'), 20, 'bob learns #alice/drone')
     sent = other.send('#alice/drone are you there?')
     check('sent to #alice/drone' in sent, sent)
     w = drone.wait(10)
-    check('are you there?' in w and 'Borg mode: after answering, call dropship_wait' in w, w)
+    check('are you there?' in w and 'BORG MODE is on' in w, w)
+    quick = time.time()
+    idle = drone.m.cli('wait', extra_env={'DROPSHIP_SESSION': drone.sid})
+    check(time.time() - quick < 5 and 'no longer waits' in idle, f'a borg listen-wait returns at once: {idle}')
+    lst = subprocess.Popen([sys.executable, str(SCRIPTS / 'dropship.py'), 'listen', 'a-drone-15'],
+                           env=a.env, stdout=subprocess.PIPE, text=True)
+    time.sleep(1.5)
+    other.send('#alice/drone ping through the listener')
+    out_l, _ = lst.communicate(timeout=30)
+    check('ping through the listener' in out_l and 'start the listener again' in out_l, out_l)
     check('borg: answers on its own' in a.cli('sessions'), 'sessions shows borg')
     off = drone.send('hypernym dropship borg off')
     check('borg off' in off, off)
@@ -315,8 +325,7 @@ def test_mcp_wait_never_blocks_a_send(a, b, c, d):
 def test_borg_silent_wait_and_cancel(a, b, c, d):
     import queue
     import threading
-    drone = a.session('silent-drone', 'Silent Drone')
-    drone.prompt('hypernym dropship borg')
+    drone = a.session('silent-drone', 'Silent Drone')               # not borg: an explicit "wait for the reply"
     srv = subprocess.Popen([sys.executable, str(SCRIPTS / 'hypernym_mcp_server.py')], stdin=subprocess.PIPE,
                            stdout=subprocess.PIPE, text=True, env=a.env, bufsize=1)
     replies = queue.Queue()
@@ -335,14 +344,20 @@ def test_borg_silent_wait_and_cancel(a, b, c, d):
              'arguments': {'as_session': 'silent-drone', 'timeout_seconds': 1}}})
         try:
             unexpected = replies.get(timeout=float(os.environ.get('DROPSHIP_IDLE_TEST_SECONDS', '3')))
-            raise AssertionError(f'Borg must stay silent beyond a requested timeout: {unexpected}')
+            if unexpected['id'] == 2:
+                pass                                             # a 1 s bounded wait may return; that's honoured now
+            else:
+                raise AssertionError(f'unexpected: {unexpected}')
         except queue.Empty:
             pass
         sender = a.session('silent-sender', 'Silent Sender')
+        drone.prompt('back to the drone')
+        rpc({'id': 5, 'method': 'tools/call', 'params': {'name': 'dropship_wait', 'arguments': {'as_session': 'silent-drone'}}})
+        time.sleep(.5)
         result = sender.send('#alice/silent-drone wake-on-message')
         check(result.startswith('sent'), result)
-        response = replies.get(timeout=5)
-        check(response['id'] == 2 and 'wake-on-message' in response['result']['content'][0]['text'], 'one response on actual mail')
+        response = replies.get(timeout=10)
+        check(response['id'] == 5 and 'wake-on-message' in response['result']['content'][0]['text'], 'one response on actual mail')
         # Every test session runs under the test runner's one app process, so that "window" is on whichever session
         # last had a prompt: put it back on the drone, as a real drone window would be, before its next waits.
         drone.prompt('back to the drone')
@@ -351,12 +366,12 @@ def test_borg_silent_wait_and_cancel(a, b, c, d):
         rpc({'method': 'notifications/cancelled', 'params': {'requestId': 3}})
         response = replies.get(timeout=5)
         check(response['id'] == 3 and response['result']['isError'], 'pending silent wait can be cancelled')
-        # Turning Borg off from another invocation wakes the waiter once, without a retry instruction.
+        # In borg mode a listen-wait never blocks: it returns at once with the passive-mode note.
+        drone.prompt('hypernym dropship borg')
         rpc({'id': 4, 'method': 'tools/call', 'params': {'name': 'dropship_wait', 'arguments': {'as_session': 'silent-drone'}}})
-        time.sleep(.5)
+        response = replies.get(timeout=10)
+        check(response['id'] == 4 and 'no longer waits' in response['result']['content'][0]['text'], 'borg wait returns at once')
         drone.prompt('hypernym dropship borg off')
-        response = replies.get(timeout=5)
-        check(response['id'] == 4 and 'do not retry automatically' in response['result']['content'][0]['text'], 'Borg off stops waiting')
     finally:
         srv.stdin.close()
         try:
@@ -369,8 +384,7 @@ def test_borg_silent_wait_and_cancel(a, b, c, d):
 def test_borg_wait_heartbeat_keeps_claude_code_alive(a, b, c, d):
     """Claude Code cancels a plugin tool that is silent for 30 minutes. With a progress token the server sends a
     progress heartbeat while dropship_wait sleeps (no model turns), then returns only when mail arrives."""
-    hive = a.session('a-hive-17', 'Hive')
-    hive.prompt('hypernym dropship borg')
+    hive = a.session('a-hive-17', 'Hive')                         # a normal session's long "wait for the reply"
     env = dict(a.env, DROPSHIP_HEARTBEAT_S='1')
     srv = subprocess.Popen([sys.executable, str(SCRIPTS / 'hypernym_mcp_server.py')], stdin=subprocess.PIPE,
                            stdout=subprocess.PIPE, text=True, env=env, bufsize=1)
@@ -386,7 +400,7 @@ def test_borg_wait_heartbeat_keeps_claude_code_alive(a, b, c, d):
         beats, t0 = 0, time.time()
         while beats < 3 and time.time() - t0 < 15:
             m = json.loads(srv.stdout.readline())
-            check('id' not in m, f'a borg wait must not return without mail: {m}')
+            check('id' not in m, f'a silent wait must not return without mail: {m}')
             if m['method'] == 'notifications/progress' and m['params']['progressToken'] == 'tok-hive':
                 beats += 1
         check(beats >= 3, f'expected progress heartbeats, got {beats}')
@@ -402,7 +416,7 @@ def test_borg_wait_heartbeat_keeps_claude_code_alive(a, b, c, d):
                 check('wake up, hive' in m['result']['content'][0]['text'], m)
                 break
         else:
-            raise AssertionError('the borg wait never returned the mail')
+            raise AssertionError('the silent wait never returned the mail')
         # without a progress token the server asks for the 25-minute renewal instead (logged)
         rpc({'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'dropship_wait', 'arguments': {
             'as_session': 'hive', 'timeout_seconds': 0}}})

@@ -46,7 +46,11 @@ def change_key(text: str) -> str:
 
 def main() -> None:
     event = json.loads(sys.stdin.read())
-    if 'PLUGIN_ROOT' not in os.environ:
+    if 'PLUGIN_ROOT' not in os.environ:                 # Claude Code: only the Dropship borg re-arm, on Stop
+        if 'hook_event_name' in event and event['hook_event_name'] == 'Stop':
+            out = dropship.borg_stop(event)
+            if out:
+                print(out)
         return
     lines = []
     try:

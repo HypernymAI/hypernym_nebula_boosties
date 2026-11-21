@@ -27,12 +27,15 @@ class SilentWaitTests(unittest.TestCase):
     def advance(self, _):
         self.clock += 3600
 
-    def test_borg_ignores_sixty_seconds_and_renews_once(self):
-        with self.assertRaises(d.WaitRenewal):
-            d.wait_for('a', 60)
+    def test_open_ended_wait_renews_once_and_bounded_borg_wait_is_honoured(self):
+        with self.assertRaises(d.WaitRenewal):            # timeout 0: the silent "wait for the reply", renewed once
+            d.wait_for('a', 0)
         self.assertGreaterEqual(self.clock, 84600)
         self.assertEqual(d.WAIT_RENEW_S, 84600)
         self.read.assert_called_once()  # unchanged inbox is not repeatedly read/written
+        self.clock = 0
+        self.assertEqual(d.wait_for('a', 60), [], 'borg no longer ignores an explicit limit')
+        self.assertLess(self.clock, 84600)
 
     def test_finite_one_off_does_not_request_renewal(self):
         d.save(d.SESSIONS / 'a.json', {'name': 'a', 'n': 0, 'borg': False})
