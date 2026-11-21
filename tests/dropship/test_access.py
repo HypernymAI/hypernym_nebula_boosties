@@ -229,6 +229,114 @@ class AccessTests(unittest.TestCase):
         self.assertIn('run together', out['hookSpecificOutput']['additionalContext'])
         self.assertEqual(len(d.approvals_of(d.load(d.FRIENDS, {})[NICK])), 2, 'nothing changed')
 
+    def test_rename_and_nicknames_are_typed_only(self):
+        for argv in (['name', 'evil'], ['nickname', 'nick', 'boss'], ['clear-nickname', 'nick']):
+            code, out = run_cli(*argv, env={'DROPSHIP_MCP_PID': '4242'})
+            self.assertEqual(code, 1, argv)
+            self.assertIn('only your user', out)
+        before = d.identity()['name']
+        with patch.object(d, 'running', lambda: False):
+            out = json.loads(d.hook_prompt(json.dumps({'prompt': 'hypernym dropship name typedname',
+                                                       'session_id': 'alpha-sid', 'transcript_path': '', 'cwd': '/w'})))
+        self.assertNotIn('decision', out)
+        self.assertEqual(d.identity()['name'], 'typedname')
+        d.local_control('name', before) if d.NAME_RE.match(before) else None
+
+    def tracer(self, nonce, sid, session, expires=None, claimed=None):
+        d.TRACERS.mkdir(exist_ok=True)
+        inv = {'id': 'me', 'session': session, 'code': 'c' + nonce[:8], 'nonce': nonce, 'sid': sid,
+               'expires': expires or time.time() + 600}
+        if claimed:
+            inv['claimed_by_id'] = claimed
+        d.save(d.TRACERS / f'{nonce}.json', inv)
+
+    def test_accepting_a_tracer_adds_that_session_to_an_existing_friends_reach(self):
+        import dropship_tracer as t
+        self.tracer('1' * 32, 'beta-sid', 'beta-1234')
+        hello = t.CONTROL + json.dumps({'kind': 'hello', 'nonce': '1' * 32})
+        self.assertEqual(t.admit(NICK, hello, 'beta-1234'), 'beta-sid')
+        self.assertEqual(t.admit(NICK, hello, 'other-alias'), '', 'only for the session the tracer names')
+        self.assertEqual(t.admit(NICK, 'plain text', 'beta-1234'), '')
+        self.tracer('2' * 32, 'beta-sid', 'beta-1234', expires=time.time() - 1)
+        self.assertEqual(t.admit(NICK, t.CONTROL + json.dumps({'kind': 'hello', 'nonce': '2' * 32}), 'beta-1234'), '',
+                         'expired tracers admit nobody')
+        self.tracer('3' * 32, 'beta-sid', 'beta-1234', claimed='a' * 16)
+        self.assertEqual(t.admit(NICK, t.CONTROL + json.dumps({'kind': 'hello', 'nonce': '3' * 32}), 'beta-1234'), '',
+                         'a claimed tracer admits only its claimer')
+        c = d.Courier.__new__(d.Courier)
+        c.me = {'name': 'me', 'id': 'me'}
+        with patch('dropship_tracer.receive', lambda *a: True):
+            c.deliver('nick', hello, 'mailbox', time.time(), 'beta-1234', '', NICK)
+        self.assertIn('beta-sid', d.friend_policy(NICK)['scope'])
+        self.assertIn('alpha-sid', d.friend_policy(NICK)['scope'], 'existing reach kept')
+
+    def test_several_open_tracers_all_stay_valid(self):
+        import dropship_tracer as t
+        self.tracer('4' * 32, 'alpha-sid', 'alpha-1')
+        self.tracer('5' * 32, 'beta-sid', 'beta-1')
+        self.assertEqual(t._invitation('4' * 32)[1]['sid'], 'alpha-sid')
+        self.assertEqual(t._invitation('5' * 32)[1]['sid'], 'beta-sid')
+        self.assertEqual(d.tracer_by_code('c' + '4' * 8)['sid'], 'alpha-sid')
+        self.assertEqual(d.tracer_by_code('c' + '5' * 8)['sid'], 'beta-sid')
+
+    def test_parallel_tracer_pairings_scope_each_friend_to_its_own_session(self):
+        import threading
+        self.tracer('6' * 32, 'alpha-sid', 'alpha-1')
+        self.tracer('7' * 32, 'beta-sid', 'beta-1')
+        c = d.Courier.__new__(d.Courier)
+        c.friends, c.peers, c.lock, c.stop = d.load(d.FRIENDS, {}), {}, threading.Lock(), threading.Event()
+        c._tl, c.tracer_jobs = threading.local(), set()
+        c.me = {'name': 'me', 'id': 'me'}
+        barrier = threading.Barrier(2)
+
+        class FakeMail:
+            def pair(self, code, done, wanted, until):
+                barrier.wait(5)                                       # both pairings in flight at once
+                pid = ('8' if code == 'c' + '6' * 8 else '9') * 16
+                done('done', c.add_friend({'id': pid, 'name': 'guest' + pid[0], 'pub': 'p' + pid, 'box': 'b'}, 'paired'))
+        c.mail = FakeMail()
+        d.PAIRINGS.mkdir(exist_ok=True)
+        jobs = []
+        for code in ('c' + '6' * 8, 'c' + '7' * 8):
+            path = d.PAIRINGS / f'{code}.json'
+            d.save(path, {'code': code, 'status': 'waiting', 'started': time.time(), 'until': time.time() + 600})
+            jobs.append(threading.Thread(target=c.run_tracer_pairing, args=(path, d.load(path, {}))))
+        [j.start() for j in jobs]
+        [j.join(10) for j in jobs]
+        f = d.load(d.FRIENDS, {})
+        self.assertEqual(f['8' * 16]['scope'], ['alpha-sid'])
+        self.assertEqual(f['9' * 16]['scope'], ['beta-sid'])
+
+    def test_a_session_outside_a_friends_reach_cannot_message_it(self):
+        with patch.object(d, 'directory', lambda: {'nick': {'kind': 'mail', 'id': NICK}}), \
+                patch.object(d, 'state', lambda: {'home': False, 'peers': [], 'relays': {}, 'warnings': []}), \
+                patch.object(d, 'send_mail', lambda *a, **k: 'ok'), patch.dict(os.environ, {'DROPSHIP_UNDER': '1'}):
+            out = d.send('nick', 'hi', 'beta-sid')
+        self.assertIn('can only talk with', out)
+
+    def test_undeliverable_mail_is_held_never_thrown_away(self):
+        d.save(d.HELD_STATE, {})
+        c = d.Courier.__new__(d.Courier)
+        c.me = {'name': 'me', 'id': 'me'}
+        c.deliver('nick', 'to the wrong window', 'mailbox', time.time(), 'beta', '', NICK)     # outside nick's reach
+        c.deliver('nick', 'to nowhere', 'mailbox', time.time(), 'nosuchsession', '', NICK)
+        c.deliver('nick', 'bad address', 'mailbox', time.time(), 'BAD NAME!', '', NICK)
+        c.deliver('stranger', 'forged', 'mailbox', time.time(), 'alpha', '', 'e' * 16)        # not a friend: dropped
+        held = d.held_mail()
+        self.assertEqual([m['body'] for m in held], ['to the wrong window', 'to nowhere', 'bad address'])
+        self.assertFalse(any(m['owner'] for m in held), 'held mail is filed under no session')
+        with self.as_window(200):                                              # beta never sees it on its own
+            self.assertEqual(d.unread_for('beta-sid'), [])
+        prompt = lambda text, sid='alpha-sid': json.loads(d.hook_prompt(json.dumps(
+            {'prompt': text, 'session_id': sid, 'transcript_path': '', 'cwd': '/w'})))['hookSpecificOutput']['additionalContext']
+        self.assertIn('to the wrong window', prompt('hypernym dropship held'))
+        n = str(held[0]['n'])
+        self.assertIn('released', prompt(f'hypernym dropship release {n} beta'))
+        got = d.unread_for('beta-sid')
+        self.assertEqual([m['body'] for m in got], ['to the wrong window'], 'released into beta, past the reach check')
+        self.assertIn('deleted 2', prompt('hypernym dropship delete-held all'))
+        self.assertEqual(d.held_mail(), [])
+
     def test_courier_save_keeps_approvals(self):
         f = d.load(d.FRIENDS, {})
         f[NICK]['approvals'] = [{'item': 'general advice', 'at': 1, 'by': 'typed', 'followups': False}]

@@ -95,8 +95,13 @@ class LocalControlTests(unittest.TestCase):
 
     def test_mcp_control_and_old_courier_restart(self):
         with patch.object(mcp, 'run_dropship', return_value=('ok', False)) as run:
-            mcp.call_tool('dropship_local', {'action': 'nickname', 'peer': '#remote', 'name': 'brother'})
-            run.assert_called_once_with(['nickname', '#remote', 'brother'])
+            for args in ({'action': 'nickname', 'peer': '#remote', 'name': 'brother'}, {'action': 'name', 'name': 'evil'}):
+                text, is_error = mcp.call_tool('dropship_local', args)       # typed by the person only, never a tool
+                self.assertTrue(is_error)
+                self.assertIn('Only your user', text)
+            run.assert_not_called()
+            mcp.call_tool('dropship_local', {'action': 'identity'})
+            run.assert_called_once_with(['identity'])
         with patch.object(d, 'running', return_value=True), patch.object(d, 'stop_daemon') as stop, patch.object(d, 'start_daemon') as start, patch.object(d, 'state', side_effect=[{'tracer_version': 0}, {'local_control_version': 1, 'mail': {'ok': True}}]):
             t.ready()
             stop.assert_called_once()

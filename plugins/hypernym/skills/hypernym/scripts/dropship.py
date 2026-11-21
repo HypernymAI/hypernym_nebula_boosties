@@ -101,7 +101,9 @@ LOG = HOME / 'daemon.log'
 LISTENERS = HOME / 'listeners'         # <session id>.pid: the background listener of each awake session
 ACTIVE = HOME / 'hosts'                # <app pid>-<app start>.json: the session that app window is on NOW
 OUTBOX = HOME / 'outbox'               # mailbox sends are queued here for the daemon (it holds the crypto)
-PAIRING = HOME / 'pairing.json'        # {code, started}: the pairing the daemon should run now
+PAIRING = HOME / 'pairing.json'        # {code, started}: the "hypernym pair" pairing the daemon should run now
+TRACERS = HOME / 'tracers'             # <nonce>.json: every open tracer invitation (several can be open at once)
+PAIRINGS = HOME / 'pairings'           # <code>.json: one pairing job per open tracer, each run in its own thread
 VENV = Path(os.environ['DROPSHIP_VENV']) if 'DROPSHIP_VENV' in os.environ else HOME / 'venv'
 REQS = ('pynacl==1.5.0', 'spake2==0.9')
 IS_WIN = sys.platform == 'win32'
@@ -409,6 +411,17 @@ def local_control(action, name='', peer=''):
         stop_daemon()
         start_daemon()
     return local_control('identity') if action == 'name' else f"Local peer name: #{friend_names()[hits[0]]}. Only this computer uses this nickname."
+
+
+def tracer_by_code(code: str) -> dict:
+    """The open (unexpired) tracer invitation that uses this pairing code, else {}."""
+    for f in sorted(TRACERS.glob('*.json')) if TRACERS.exists() else []:
+        inv = load(f, {})
+        if isinstance(inv, dict) and 'code' in inv and inv['code'] == code and 'expires' in inv \
+                and inv['expires'] > time.time() and 'sid' in inv:
+            return inv
+    inv = load(HOME / 'tracer-invitation.json', {})       # tracers made before 0.7.52
+    return inv if isinstance(inv, dict) and 'code' in inv and inv['code'] == code and 'sid' in inv else {}
 
 
 def pair_key(me: dict, peer_pub_hex: str) -> bytes:
@@ -872,6 +885,8 @@ class Courier:
         self.mail_why = ''
         self.peer_sessions = {}    # friend id → the session names they advertise
         self.pairing = None        # {code, status: waiting|done|failed, detail, at}
+        self._tl = threading.local()                    # the pairing code a pairing thread is running
+        self.tracer_jobs = set()
         self.refresh_names()
 
     # -- shared with the mailbox (dropship_mail.Mail)
@@ -887,44 +902,62 @@ class Courier:
         """`pid` is the AUTHENTICATED machine id of the sender (LAN signature / mailbox Box). Access policy is decided
         on it alone, before anything else — tracer control, inbox, wake."""
         body = clean(body)
-        if to_s and not SESSION_RE.fullmatch(to_s):
-            log('dropped message with invalid explicit session target')
-            return
         from_s = from_s if SESSION_RE.match(from_s or '-') else ''
         friends = load(FRIENDS, {})
-        if not pid or pid not in friends:
+        if not pid or pid not in friends:               # not a real friend: forged or unknown, not mail
             log(f'dropped message from unauthenticated/unknown peer {name!r} ({pid or "no id"})')
             return
+        if to_s and not SESSION_RE.fullmatch(to_s):
+            return self.hold('addressed to a malformed session name', name, pid, body, via, '', from_s)
         pol = friend_policy(pid)
         if pol['blocked']:
-            log(f'dropped message from blocked friend {name} ({pid})')
-            return
+            return self.hold('from a blocked friend', name, pid, body, via, to_s, from_s)
+        if pol['scope'] is not None and to_s:
+            from dropship_tracer import admit
+            sid = admit(pid, body, to_s)                # accepting your tracer = your consent for that session
+            if sid and sid not in pol['scope']:
+                with friends_lock():
+                    friends = load(FRIENDS, {})
+                    if 'scope' in friends[pid] and sid not in friends[pid]['scope']:
+                        friends[pid]['scope'] = list(friends[pid]['scope']) + [sid]
+                        save(FRIENDS, friends)
+                log(f'friend {name} ({pid}) accepted a tracer: may now also reach session {sid}')
+                pol = friend_policy(pid)
         owner = ''
         if pol['scope'] is not None:
             if to_s:                                    # an explicit target must BE one of its sessions (name/alias)
                 hits = [sid for sid in pol['scope'] if session_record(sid)['name'] == to_s or to_s in
                         (session_record(sid)['aliases'] if 'aliases' in session_record(sid) else [])]
                 if not hits:
-                    log(f'dropped message from scoped friend {name} ({pid}) to {to_s}: outside its scope')
-                    return
+                    return self.hold(f'to #{to_s}, outside the sessions #{name} may reach', name, pid, body, via, to_s,
+                                     from_s)
                 owner = hits[0]
             elif pol['scope']:
                 owner = pol['scope'][0]                 # bare-machine mail stays inside the scope
             else:
-                log(f'dropped message from scoped friend {name} ({pid}): empty scope')
-                return
+                return self.hold(f'#{name} may reach no session', name, pid, body, via, to_s, from_s)
         from dropship_tracer import receive
         if receive(self, name, body, to_s, from_s):
             return
         if body:
             if not owner:
                 owner = owner_of(to_s, name)
-            if to_s and not owner:
-                log(f'dropped message to unknown explicit session {to_s!r}')
-                return
+            if not owner:
+                return self.hold(f'no added session called #{to_s}' if to_s else 'no added session to deliver to',
+                                 name, pid, body, via, to_s, from_s)
             append_inbox({'dir': 'in', 'via': via, 'from': name, 'from_id': pid, 'from_s': from_s, 'to': self.me['name'],
                           'to_s': to_s, 'owner': owner, 'ts': time.time(), 'body': body})
             log_talk(owner, f'{name}/{from_s}' if from_s else name, 'in')
+
+    def hold(self, reason: str, name: str, pid: str, body: str, via: str, to_s: str, from_s: str) -> None:
+        """Mail from an authenticated friend that may not be delivered right now is KEPT, never thrown away: filed
+        under no session (no agent sees it) until the person releases or deletes it ("hypernym dropship held")."""
+        if not body or body.startswith('dropship-tracer-v1:'):
+            log(f'ignored a tracer control message from {name}: {reason}')     # protocol, not mail
+            return
+        append_inbox({'dir': 'in', 'via': via, 'from': name, 'from_id': pid, 'from_s': from_s, 'to': self.me['name'],
+                      'to_s': to_s, 'owner': '', 'held': reason, 'ts': time.time(), 'body': body})
+        log(f'held a message from {name} ({pid}): {reason}')
 
     # -- secret file transfers (dropship_secret.py): typed mail, never the chat path
     def secret_allowed(self, pid: str, to_s: str) -> bool:
@@ -965,6 +998,12 @@ class Courier:
                     dropship_secret.sweep()
                 except ImportError:
                     pass
+                for folder in (TRACERS, PAIRINGS):            # tracers a day past expiry, and their pairing jobs
+                    for f in folder.glob('*.json') if folder.exists() else []:
+                        e = load(f, {})
+                        end = e['expires'] if 'expires' in e else e['until'] if 'until' in e else 0
+                        if end and end < time.time() - 86400:
+                            f.unlink(missing_ok=True)
             if not config()['enabled'] or not config()['wake_codex']:
                 continue
             codex = codex_bin()
@@ -1017,9 +1056,13 @@ class Courier:
                                      box=str(card['box']), how=how, since=old.get('since', time.time()))
             # Paired through THIS computer's tracer: confined to the tracer's session from the first moment — the
             # scope is written in the same save as the friendship, so no thread ever sees it with full trust.
-            inv, job = load(HOME / 'tracer-invitation.json', {}), load(PAIRING, {})
-            if not old and isinstance(inv, dict) and isinstance(job, dict) and 'code' in inv and 'sid' in inv \
-                    and 'code' in job and inv['code'] == job['code']:
+            tl = self.__dict__['_tl'] if '_tl' in self.__dict__ else None
+            code = tl.code if tl is not None and hasattr(tl, 'code') else ''
+            if not code:
+                job = load(PAIRING, {})
+                code = job['code'] if isinstance(job, dict) and 'code' in job else ''
+            inv = tracer_by_code(code) if code else {}
+            if not old and inv:
                 self.friends[pid]['scope'] = [inv['sid']]
                 self.friends[pid]['scoped_by'] = 'tracer'
                 log(f"friend {name} ({pid}) paired by tracer: scoped to session {inv['sid']}")
@@ -1077,7 +1120,8 @@ class Courier:
         if not ok:
             base = mailbox_url(refresh=True)
         self.mail = dropship_mail.Mail(self, base)
-        for t in (self.mail.listen, self.mail.pinger, self.outbox_loop, self.pairing_loop, self.mailbox_watch):
+        for t in (self.mail.listen, self.mail.pinger, self.outbox_loop, self.pairing_loop, self.tracer_loop,
+                  self.mailbox_watch):
             threading.Thread(target=t, daemon=True).start()
 
     def mailbox_watch(self):
@@ -1183,9 +1227,8 @@ class Courier:
 
                 def done(status, detail, job=job):
                     job.update({'status': status, 'detail': detail, 'at': time.time()})
-                    inv = load(HOME / 'tracer-invitation.json', {})
-                    if status == 'done' and isinstance(inv, dict) and 'code' in inv and inv['code'] == job['code'] \
-                            and 'sid' in inv:
+                    inv = tracer_by_code(job['code'])
+                    if status == 'done' and inv:
                         pid = friend_id(detail)
                         if pid:
                             with friends_lock():
@@ -1208,6 +1251,45 @@ class Courier:
                                and load(PAIRING, {'code': '', 'started': 0})['started'] == t,
                                float(job['until']) if 'until' in job else 0.0)
             self.stop.wait(1)
+
+    def tracer_loop(self):
+        """Every open tracer gets its own pairing thread, so several tracers (for different people or sessions) stay
+        valid at the same time; none cancels another."""
+        while not self.stop.is_set():
+            for f in sorted(PAIRINGS.glob('*.json')) if PAIRINGS.exists() else []:
+                job = load(f, None)
+                if not isinstance(job, dict) or 'code' not in job or job['status'] != 'new' or f.name in self.tracer_jobs:
+                    continue
+                job['status'] = 'waiting'
+                save(f, job)
+                self.tracer_jobs.add(f.name)
+                threading.Thread(target=self.run_tracer_pairing, args=(f, job), daemon=True).start()
+            self.stop.wait(1)
+
+    def run_tracer_pairing(self, path: Path, job: dict) -> None:
+        self._tl.code = job['code']
+        until = float(job['until']) if 'until' in job else 0.0
+
+        def done(status, detail):
+            job.update({'status': status, 'detail': detail, 'at': time.time()})
+            inv = tracer_by_code(job['code'])
+            if status == 'done' and inv:
+                pid = friend_id(detail)
+                if pid:
+                    with friends_lock():
+                        friends = load(FRIENDS, {})
+                        if 'scope' not in friends[pid]:
+                            friends[pid]['scope'] = [inv['sid']]
+                            friends[pid]['scoped_by'] = 'tracer'
+                            save(FRIENDS, friends)
+                            log(f"friend {detail} ({pid}) paired by tracer: scoped to session {inv['sid']}")
+            if path.exists():
+                save(path, job)
+            log(f"tracer pairing {status}: {detail}")
+        try:
+            self.mail.pair(job['code'], done, lambda: path.exists() and (not until or time.time() < until), until)
+        finally:
+            self.tracer_jobs.discard(path.name)
 
     # -- network watch: open sockets only at home
     def watch(self):
@@ -1774,6 +1856,11 @@ def send(to: str, body: str, sid: str = '') -> str:
         pid = d[name]['id'] if 'id' in d[name] else ''
         if not pid and name in restricted_labels:
             return f'#{name} is a restricted friend; it can only be reached on its own authenticated route.'
+        if pid and sid and pid in friends_now and 'scope' in friends_now[pid] \
+                and isinstance(friends_now[pid]['scope'], list) and _sid(sid) not in friends_now[pid]['scope']:
+            where_ok = ', '.join(f"#{identity()['name']}/{session_record(x)['name']}" for x in friends_now[pid]['scope'])
+            return (f'Not sent: #{name} can only talk with {where_ok or "no session"}, so its replies could never reach '
+                    f'this window. Send from one of those, or ask your user to make a tracer for this window.')
         if pid and pid in friends_now and restricted(friends_now[pid]):
             if to == 'all':
                 return f'#{name} is restricted (approved items only); send to it by name, with the approved item.'
@@ -1818,6 +1905,8 @@ def allowed_for(m: dict, sid: str) -> bool:
     scope/block change applies instantly to mail already in the inbox, with no cross-process inbox rewrite."""
     if m['via'] == 'local':
         return True                                     # another session on this same computer
+    if 'released' in m and m['released']:
+        return True                                     # the person released it from held mail into this session
     pid = m['from_id'] if 'from_id' in m and m['from_id'] else friend_id(m['from'])
     if not pid:
         return False                                    # legacy/unattributable remote mail: fail closed
@@ -2268,7 +2357,7 @@ def resolve_target(target: str) -> str:
 
 
 CMD_RE = re.compile(r'^hypernym\s+dropship\s+(add|remove|sessions|awake|borg|scope|trust|block|unblock|friends|approve|'
-                    r'revoke|approvals|sent)\b\s*(.*)$',
+                    r'revoke|approvals|sent|name|nickname|clear-nickname|held|release|delete-held)(?![\w-])\s*(.*)$',
                     re.I | re.S)
 HASH_RE = re.compile(r'^#([a-z0-9][a-z0-9._-]{0,31}(?:/[a-z0-9][a-z0-9._-]{0,31})?)\s+(.+)$', re.S | re.I)
 
@@ -2307,11 +2396,29 @@ def hook_prompt(raw: str) -> str:
     if cmd and cmd.group(1).lower() == 'borg':
         if (cmd.group(2) or '').strip().lower() == 'off':
             r = set_borg(sid, False)
-            return json.dumps({'decision': 'block', 'reason': f"Dropship: borg off — #{identity()['name']}/{r['name']} "
-                                                            'is back to normal (it still receives messages at its prompts).'})
+            return through(approval_note(f"Dropship: borg off — #{identity()['name']}/{r['name']} is back to normal "
+                                         '(it still receives messages at its prompts). Stop any pending dropship_wait.'))
         r = set_borg(sid, True)                         # through to Claude: it starts the loop right now
         return through(borg_note(r) + '\nStart now: tell your user in one line that borg mode is on, then call '
                        'dropship_wait.')
+    if cmd and cmd.group(1).lower() in ('held', 'release', 'delete-held'):
+        result = held_command(cmd.group(1).lower(), cmd.group(2) or '', _sid(sid))
+        return through(approval_note(result))
+    if cmd and cmd.group(1).lower() in ('name', 'nickname', 'clear-nickname'):
+        verb, args = cmd.group(1).lower(), (cmd.group(2) or '').split()
+        try:
+            if verb == 'name' and len(args) == 1:
+                result = local_control('name', args[0])
+            elif verb == 'nickname' and len(args) == 2:
+                result = local_control('nickname', args[1], args[0])
+            elif verb == 'clear-nickname' and len(args) == 1:
+                result = local_control('clear-nickname', peer=args[0])
+            else:
+                result = 'Dropship: use name <name>, nickname <peer> <name>, or clear-nickname <peer>.'
+        except ValueError as e:
+            result = f'Dropship: {e}'
+        log(f'typed {verb} {" ".join(args)!r} in {addr(identity()["name"], rec["name"])}')
+        return through(approval_note(result))
     if cmd and cmd.group(1).lower() in ('approve', 'revoke', 'approvals', 'sent'):
         # Not 'block': Claude Code puts a blocked prompt back in the input box, and the next command then gets typed
         # after the leftover text. The change is already made HERE; the agent only reports the result.
@@ -2328,13 +2435,15 @@ def hook_prompt(raw: str) -> str:
         else:
             result = set_policy(args[0], trust=verb == 'trust', blocked={'block': True, 'unblock': False}[verb]
                                 if verb in ('block', 'unblock') else None)
-        return json.dumps({'decision': 'block', 'reason': result})
+        return through(approval_note(result))
     if cmd:                                             # instant commands; nothing typed is ever SENT by the hook
         verb, arg = cmd.group(1).lower(), (cmd.group(2) or '').strip()
         result = (set_exposed(sid, True) if verb == 'add' else set_exposed(sid, False) if verb == 'remove'
                   else sessions_text() if verb == 'sessions' else awake(arg) if arg
                   else 'Dropship: say which session, e.g. "hypernym dropship awake scout".')
-        return json.dumps({'decision': 'block', 'reason': result})
+        # Not 'block' (Claude Code shows a block as an error and puts the text back in the input box): the command is
+        # already done here; the agent only repeats the result in one line.
+        return through(approval_note(result))
     if not rec['exposed'] and not rec['borg']:
         return ''                                       # not added: no Dropship mail or notices in this window
     new = unread_for(sid)
@@ -2348,10 +2457,66 @@ def hook_prompt(raw: str) -> str:
     return through(as_context(new, addr(me, rec['name']), rec['name']))
 
 
+HELD_STATE = HOME / 'held.json'       # {inbox line: 'released' | 'deleted'}
+
+
+def held_mail() -> list:
+    """Held messages still waiting: kept by the courier because they could not be delivered (outside a friend's
+    reach, a blocked friend, no such added session). Also unfiled mail from before 0.7.52 (last 30 days)."""
+    done = load(HELD_STATE, {})
+    cutoff = time.time() - 30 * 86400
+    return [m for m in inbox() if m['dir'] == 'in' and str(m['n']) not in done and
+            ('held' in m or (m['via'] != 'local' and 'owner' in m and not m['owner'] and m['ts'] > cutoff))]
+
+
+def held_command(verb: str, args: str, typed_sid: str) -> str:
+    words = args.split()
+    waiting = held_mail()
+    by_n = {str(m['n']): m for m in waiting}
+    if verb == 'held':
+        if not waiting:
+            return 'Dropship: no held mail.'
+        rows = [f"{m['n']}. {time.strftime('%m-%d %H:%M', time.localtime(m['ts']))} from #{m['from']}"
+                f"{'/' + m['from_s'] if m['from_s'] else ''} to #{m['to_s'] or '(computer)'}: "
+                f"{m['held'] if 'held' in m else 'unfiled'}. \"{' '.join(m['body'].split())[:70]}\""
+                for m in waiting[-30:]]
+        return ('Dropship held mail (nothing here has reached any agent). Release one with '
+                '"hypernym dropship release <n> [session]", or delete with "hypernym dropship delete-held <n|all>":\n'
+                + '\n'.join(rows))
+    state = load(HELD_STATE, {})
+    if verb == 'delete-held':
+        targets = list(by_n) if words[:1] == ['all'] else [w for w in words if w in by_n]
+        if not targets:
+            return 'Dropship: say which held message, e.g. "hypernym dropship delete-held 2885" (see "hypernym dropship held").'
+        for n in targets:
+            state[n] = 'deleted'
+        save(HELD_STATE, state)
+        return f'Dropship: deleted {len(targets)} held message(s).'
+    if not words or words[0] not in by_n:
+        return 'Dropship: say which held message, e.g. "hypernym dropship release 2885 final-night-7".'
+    m = by_n[words[0]]
+    sid = typed_sid
+    if len(words) > 1:
+        hits = [(r['seen'], k) for k, r in all_sessions().items()
+                if r['name'] == words[1].lstrip('#').split('/')[-1] and r['exposed']]
+        if not hits:
+            return f'Dropship: no added session called {words[1]}.'
+        sid = max(hits)[1]
+    if not session_record(sid)['exposed']:
+        return 'Dropship: that session is not added to Dropship; release into an added session.'
+    copy = {k: v for k, v in m.items() if k not in ('n', 'held')}
+    copy.update({'owner': sid, 'released': True, 'held_n': m['n']})
+    append_inbox(copy)
+    state[words[0]] = 'released'
+    save(HELD_STATE, state)
+    log(f"held message {m['n']} from {m['from']} released into {sid}")
+    return f"Dropship: released message {m['n']} from #{m['from']} into #{identity()['name']}/{session_record(sid)['name']}."
+
+
 def approval_note(result: str) -> str:
-    return ('<dropship-approvals>\nYour user typed a Dropship approvals command. Dropship has ALREADY handled it; you '
-            'cannot and must not change approvals. Show your user this result exactly, in a short reply, and do nothing '
-            'else:\n' + result + '\n</dropship-approvals>')
+    return ('<dropship-approvals>\nYour user typed a Dropship command. Dropship has ALREADY handled it; you cannot and '
+            'must not redo or change it. Show your user this result exactly, in a short reply, and do nothing else:\n'
+            + result + '\n</dropship-approvals>')
 
 
 def friends_text() -> str:
@@ -2596,6 +2761,10 @@ def status_text() -> str:
                               'courier restart required for tracer support'))
     if 'pairing' in s and s['pairing'] is not None and s['pairing']['status'] in ('new', 'waiting'):
         lines.append(f"Pairing in progress: {s['pairing']['code']}")
+    held = len(held_mail())
+    if held:
+        lines.append(f'Held mail: {held} message(s) kept because they could not be delivered. Your user can type '
+                     '"hypernym dropship held" to see them.')
     lines += [f'Warning: {w}' for w in s['warnings']]
     return '\n'.join(lines)
 
@@ -2809,6 +2978,10 @@ def main() -> int:
         result = send(a[1], ' '.join(a[2:]), sid)
         print(result + ('. Call dropship_wait to wait for the answer.' if result.startswith('sent') else ''))
         return 0
+    if a and a[0] in ('name', 'nickname', 'clear-nickname') and 'DROPSHIP_MCP_PID' in os.environ:
+        print('Dropship: only your user can rename this computer or set nicknames, by typing at a prompt: '
+              '"hypernym dropship name <name>" or "hypernym dropship nickname <peer> <name>".')
+        return 1
     if a and a[0] in ('identity', 'name', 'nickname', 'clear-nickname'):
         try:
             if a == ['identity']:

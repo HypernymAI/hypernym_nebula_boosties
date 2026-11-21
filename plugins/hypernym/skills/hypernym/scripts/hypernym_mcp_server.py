@@ -55,9 +55,9 @@ CALL = threading.local()
 DIR_PROP = {'type': 'string', 'description': 'Path of the git repo (default: the working directory).'}
 TOOLS = [
     {'name': 'dropship_local',
-     'description': 'Show this computer identity, rename it without changing keys or friends, or set/remove a private nickname for a peer. Use for hypernym dropship name <name> or nickname <peer> <name>. Does not trust the current network. action "register" adds THIS session to Dropship after your user has given it a name with /rename (it checks the name and that the session is listed).',
+     'description': 'Show this computer identity (action "identity"), or add THIS session to Dropship (action "register") after your user has given it a name with /rename; it checks the name and that the session is listed. Renaming the computer and nicknames are typed by your user only.',
      'inputSchema': {'type': 'object', 'required': ['action'], 'properties': {
-         'action': {'type': 'string', 'enum': ['identity', 'name', 'nickname', 'clear-nickname', 'register']},
+         'action': {'type': 'string', 'enum': ['identity', 'register']},
          'name': {'type': 'string', 'description': 'New machine name or local nickname.'},
          'peer': {'type': 'string', 'description': 'Exact peer label from status or its stable machine ID.'}}}},
     {'name': 'dropship_tracer',
@@ -377,6 +377,9 @@ def call_tool(name: str, arguments: dict) -> tuple:
         action = arguments['action']
         if action == 'register':
             return run_dropship(['register'])
+        if action != 'identity':
+            return ('Only your user can rename this computer or set nicknames, by typing at a prompt: '
+                    '"hypernym dropship name <name>" or "hypernym dropship nickname <peer> <name>".', True)
         args = [action]
         if action in ('nickname', 'clear-nickname'):
             args.append(arguments['peer'] if 'peer' in arguments else '')

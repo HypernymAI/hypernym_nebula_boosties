@@ -102,9 +102,10 @@ class Session:
         if line.startswith('#'):
             to, _, body = line.partition(' ')
             return self.m.cli('send', to, body, extra_env={'DROPSHIP_SESSION': self.sid})
-        out = self.prompt(line)
-        assert out and 'decision' in out, f'{line!r} was not answered by Dropship'
-        return out['reason']
+        out = self.prompt(line)                  # handled by the hook first, then passed through with the result
+        ctx = out['hookSpecificOutput']['additionalContext'] if out and 'hookSpecificOutput' in out else ''
+        assert 'ALREADY handled' in ctx and 'decision' not in out, f'{line!r} was not answered by Dropship: {out}'
+        return ctx
 
     def wait(self, secs: int) -> str:
         return self.m.cli('wait', str(secs), extra_env={'DROPSHIP_SESSION': self.sid})

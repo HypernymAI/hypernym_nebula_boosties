@@ -21,6 +21,7 @@ PUB, PRIV, TEAM = 'pub-publishing-sid', 'priv-transport-sid', 'teammate0000001'
 class Fake:
     """The parts of the Courier that deliver() uses."""
     me = {'name': 'chris', 'id': 'self0000'}
+    hold = d.Courier.hold
 
 
 IDS = {'teammate': TEAM, 'benito': 'benito00'}
@@ -32,7 +33,12 @@ def deliver(name, body, to_s='', pid=None):
 
 
 def delivered():
-    return [(m['from'], m['owner'], m['body']) for m in d.inbox() if m['dir'] == 'in']
+    """What reached a session. Undeliverable mail is held (kept, filed under no session), never delivered."""
+    return [(m['from'], m['owner'], m['body']) for m in d.inbox() if m['dir'] == 'in' and 'held' not in m]
+
+
+def held():
+    return [m['body'] for m in d.inbox() if m['dir'] == 'in' and 'held' in m]
 
 
 class IsolationTests(unittest.TestCase):
@@ -57,6 +63,7 @@ class IsolationTests(unittest.TestCase):
         deliver('teammate', 'sneaky', 'transportsession')            # another session by name → dropped
         deliver('teammate', 'alias trick', 'priv-transport-alias')   # unknown alias → dropped
         self.assertEqual(delivered(), [])
+        self.assertEqual(held(), ['sneaky', 'alias trick'], 'kept for the person, never thrown away')
         deliver('teammate', 'bare machine mail')                     # no session → forced into scope
         deliver('teammate', 'to publishing', 'final-night-7-publishing')
         self.assertEqual([o for _f, o, _b in delivered()], [PUB, PUB])

@@ -110,8 +110,11 @@ def create(name='', minutes=10):
     r.setdefault('aliases', []).append(value['session'])
     r['aliases'] = list(dict.fromkeys(r['aliases']))[-10:]
     d.save(d.SESSIONS / f'{sid}.json', r)
-    d.save(d.HOME / 'tracer-invitation.json', dict(value, sid=sid))
-    d.save(d.PAIRING, {'code': code, 'status': 'new', 'started': time.time(), 'until': value['expires']})
+    d.TRACERS.mkdir(exist_ok=True)
+    d.PAIRINGS.mkdir(exist_ok=True)
+    d.save(d.TRACERS / f'{nonce}.json', dict(value, sid=sid))            # one file per open tracer: none replaces another
+    d.save(d.HOME / 'tracer-invitation.json', dict(value, sid=sid))       # the latest one (kept for older tools)
+    d.save(d.PAIRINGS / f'{code}.json', {'code': code, 'status': 'new', 'started': time.time(), 'until': value['expires']})
     token = PREFIX + base64.urlsafe_b64encode(json.dumps(value, separators=(',', ':')).encode()).decode().rstrip('=')
     return (f"Your address: {d.addr(d.identity()['name'], r['name'])}\n"
             f'Tracer expires in {describe(value["expires"] - int(time.time()))}. Paste this into the other Codex or Claude agent:\n'
@@ -155,6 +158,39 @@ def connect(token, name=''):
     return f'Invitation sent to {target}; no session receipt yet. Retry before expiry. This does not prove an agent is awake.'
 
 
+def _invitation(nonce):
+    """The open tracer with this nonce (path, invitation), else (None, {})."""
+    if not isinstance(nonce, str) or len(nonce) != 32 or any(c not in '0123456789abcdef' for c in nonce):
+        return None, {}
+    p = d.TRACERS / f'{nonce}.json'
+    inv = d.load(p, {})
+    if not inv:                                         # made before 0.7.52
+        p = d.HOME / 'tracer-invitation.json'
+        inv = d.load(p, {})
+    ok = isinstance(inv, dict) and 'nonce' in inv and inv['nonce'] == nonce and 'expires' in inv \
+        and inv['expires'] > time.time() and 'sid' in inv
+    return (p, inv) if ok else (None, {})
+
+
+def admit(pid, body, to_s):
+    """A tracer hello from an already-paired friend, for an open tracer of the addressed session: that session's id
+    (accepting your tracer is your consent to that session), else ''. Claimed tracers admit only their claimer."""
+    if not isinstance(body, str) or not body.startswith(CONTROL):
+        return ''
+    try:
+        msg = json.loads(body[len(CONTROL):])
+        if msg['kind'] != 'hello':
+            return ''
+        _p, inv = _invitation(msg['nonce'])
+    except (ValueError, KeyError, TypeError):
+        return ''
+    if not inv or inv['session'] != to_s:
+        return ''
+    if 'claimed_by_id' in inv and inv['claimed_by_id'] != pid:
+        return ''
+    return inv['sid']
+
+
 def receive(courier, name, body, to_s, from_s):
     """Only acknowledge an unexpired invitation; never interpret peer text as commands."""
     if not body.startswith(CONTROL):
@@ -170,15 +206,15 @@ def receive(courier, name, body, to_s, from_s):
         if msg['kind'] == 'ack':
             d.save(d.HOME / ('tracer-receipt-' + nonce + '.json'), {'from': name, 'from_id': d.peer_identity(name), 'owner': owner, 'at': time.time()})
         elif msg['kind'] == 'hello':
-            invitation = d.load(d.HOME / 'tracer-invitation.json', {})
-            if invitation.get('nonce') != nonce or invitation.get('sid') != owner or invitation.get('expires', 0) <= time.time():
+            inv_path, invitation = _invitation(nonce)
+            if not invitation or invitation['sid'] != owner:
                 return True
             peer_id = d.peer_identity(name)
             if invitation.get('claimed_by_id', peer_id) != peer_id or ('claimed_by_id' not in invitation and invitation.get('claimed_by', name) != name):
                 return True
             invitation['claimed_by'] = name
             invitation['claimed_by_id'] = peer_id
-            d.save(d.HOME / 'tracer-invitation.json', invitation)
+            d.save(inv_path, invitation)
             d.OUTBOX.mkdir(exist_ok=True)
             d.save(d.OUTBOX / ('tracer-' + secrets.token_hex(8) + '.json'),
                    {'to': name, 'to_id': '' if peer_id.startswith('name:') else peer_id, 'body': CONTROL + json.dumps({'kind': 'ack', 'nonce': nonce}),
