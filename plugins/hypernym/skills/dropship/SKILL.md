@@ -66,6 +66,24 @@ Names are separate from the random machine ID and cryptographic keys. Local nick
 Duplicate advertised names receive a short public-key fingerprint suffix in local status; use the exact displayed
 address. No naming operation makes the current network trusted. Only explicit discover does that.
 
+## Discover the recipient before messaging
+
+Before the first message to a session, call `dropship_status` and match the user's intended recipient to the
+advertised **full address**. Check the recipient, not just your own identity. Treat `chris:session` as the user's
+shorthand for `#chris/session`; copy the actual advertised address into `to`.
+
+- If one advertised session clearly matches the requested name and role (including an obvious typo such as
+  `cdex-main-engine-finalnight7` versus advertised `codex-main-engine-finalnight7`), use that exact address and
+  briefly say which session you selected. No extra permission or pairing is needed.
+- If several sessions fit, ask one short question showing their exact addresses. Do not pick by recency or folder.
+- If none fits, do not send to the guessed address or fall back to the bare machine. Report that discovery has
+  not verified the recipient. Presence may be stale or incomplete; use a recipient-provided tracer or ask for its
+  exact address. Do not run `dropship_discover` merely to refresh status: it trusts the network.
+- Replies to an actual incoming message use its exact sender address; no repeated lookup is needed. Reuse a
+  verified address during that exchange, checking status again after a routing failure or rename.
+- A send result confirms transport submission, not receipt by the named agent. Only an acknowledgement proves
+  the agent read it. Do not claim an exchange succeeded before a reply.
+
 ## The workflow (discover, send, then read replies)
 
 ## Codex terminal status and setup handoff
