@@ -196,6 +196,20 @@ TOOLS = [
          'key': {'type': 'string'}, 'overwrite': {'type': 'boolean'}, 'friend': {'type': 'string'},
          'session': {'type': 'string', 'description': 'allow: limit the grant to this local session.'},
          'as_session': {'type': 'string'}}}},
+    {'name': 'dropship_file',
+     'description': "Send or receive a FILE of any size between friends' computers; its contents never pass through you "
+                    "(you only see an id like fx_…). Fastest route is chosen automatically: same Wi-Fi, then Tailscale, "
+                    "then the encrypted mailbox relay. Actions: offer (path, to, label?, under? for restricted friends), "
+                    "list, accept (id, dest? folder), refuse (id). list/accept/refuse act only on files offered to THIS "
+                    "session. Only when your user asks; always ask them before accepting a file (files arrive on their "
+                    "own only from friends your user set with the typed command 'hypernym dropship files <friend> auto'; "
+                    "you cannot change that). Long messages (over 8000 characters) to a mailbox friend are sent as a "
+                    "file automatically by dropship_send.",
+     'inputSchema': {'type': 'object', 'required': ['action'], 'properties': {
+         'action': {'type': 'string', 'enum': ['offer', 'list', 'accept', 'refuse']},
+         'path': {'type': 'string'}, 'to': {'type': 'string'}, 'label': {'type': 'string'},
+         'id': {'type': 'string'}, 'dest': {'type': 'string'}, 'under': {'type': 'string'},
+         'as_session': {'type': 'string'}}}},
     {'name': 'hypernym_hot_update',
      'description': "Update Hypernym in EVERY client on this computer (Claude Code and Codex, through their own plugin "
                     "managers), bring all open windows onto the new code WITHOUT restarting them, and restart the "
@@ -433,6 +447,19 @@ def call_tool(name: str, arguments: dict) -> tuple:
             args = ['secret-discard', g('id')]
         else:
             args = ['secret-list']
+        return run_dropship(args, env)
+    if name == 'dropship_file':
+        act = arguments['action']
+        g = lambda k: str(arguments[k]) if k in arguments and arguments[k] not in (None, '') else ''
+        env = {'DROPSHIP_AS': g('as_session')} if g('as_session') else {}
+        if g('under'):
+            env['DROPSHIP_UNDER'] = g('under')
+        if act == 'offer':
+            args = ['file-offer', g('path'), g('to')] + (['--label', g('label')] if g('label') else [])
+        elif act in ('accept', 'refuse'):
+            args = [f'file-{act}', g('id')] + (['--dest', g('dest')] if act == 'accept' and g('dest') else [])
+        else:
+            args = ['file-list']
         return run_dropship(args, env)
     if name == 'hypernym_hot_update':
         return run_dropship(['hot-update'], timeout=900)

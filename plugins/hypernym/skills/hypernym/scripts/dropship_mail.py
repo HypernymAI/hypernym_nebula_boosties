@@ -290,7 +290,7 @@ class Mail:
             except (ValueError, KeyError, TypeError):
                 pass
             return
-        if kind not in ('msg', 'secret', 'secret-receipt'):
+        if kind not in ('msg', 'secret', 'secret-receipt', 'file-offer', 'file-accept', 'file-receipt'):
             return
         key = friend['id'] + ':' + mid
         if key in self.done:
@@ -320,13 +320,20 @@ class Mail:
         got['chunks'][str(i)] = str(env['body'])
         if len(got['chunks']) == n:
             whole = ''.join(got['chunks'][str(k)] for k in range(n))
-            if (got['kind'] if 'kind' in got else 'msg') == 'msg':
-                self.c.deliver(self.c.friends[friend['id']]['name'], whole, 'mailbox', float(env['ts']),
-                               got['to_s'], got['from_s'], friend['id'])
-            else:                                       # typed secret transfer: never the chat/inbox body path
-                self.c.secret_mail(got['kind'], friend['id'], self.c.friends[friend['id']]['name'], whole, got['to_s'])
+            # Done FIRST and whatever happens below: a message that makes a handler fail is never replayed (a crash
+            # here used to kill the mailbox reader, and the same message crashed it again on every restart).
             self.done[key] = time.time()
-            del self.parts[key]
+            self.parts.pop(key, None)
+            try:
+                label = self.c.friends[friend['id']]['name']
+                if (got['kind'] if 'kind' in got else 'msg') == 'msg':
+                    self.c.deliver(label, whole, 'mailbox', float(env['ts']), got['to_s'], got['from_s'], friend['id'])
+                elif got['kind'].startswith('file-'):    # file transfer control: never the chat/inbox body path
+                    self.c.file_mail(got['kind'], friend['id'], label, whole, got['to_s'])
+                else:                                   # typed secret transfer: never the chat/inbox body path
+                    self.c.secret_mail(got['kind'], friend['id'], label, whole, got['to_s'])
+            except Exception as e:                       # noqa: BLE001 — log the type only (never the body)
+                storage.log(f'mailbox {got["kind"]} from {friend["id"]} dropped: {type(e).__name__}')
         self.checkpoint()
 
     # -- pairing

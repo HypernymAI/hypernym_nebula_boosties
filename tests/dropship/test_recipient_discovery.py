@@ -30,11 +30,20 @@ class RecipientTests(unittest.TestCase):
             c.deliver('peer', 'hello', 'lan', 1, to_s=target, pid='peer-id')
             return inbox.call_args_list, talk.call_args_list
 
+    def assert_held_not_delivered(self, target):
+        """Since 0.7.52 undeliverable mail is HELD for the person (never thrown away): filed under no session, so it
+        is neither delivered, nor defaulted, nor logged as a conversation."""
+        inbox, talk = self.deliver(target)
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0].args[0]['owner'], '', 'not delivered to any session, not the default')
+        self.assertIn('held', inbox[0].args[0])
+        self.assertEqual(talk, [], 'not logged as a conversation')
+
     def test_typo_is_not_delivered_or_logged_as_conversation(self):
-        self.assertEqual(self.deliver('cdex-main'), ([], []))
+        self.assert_held_not_delivered('cdex-main')
 
     def test_malformed_target_does_not_become_default(self):
-        self.assertEqual(self.deliver('codex-main/other'), ([], []))
+        self.assert_held_not_delivered('codex-main/other')
 
     def test_exact_and_stable_alias_reach_same_session(self):
         for target in ('codex-main', 'stable-main'):

@@ -38,9 +38,12 @@ class Machine:
         Machine.count += 1
         self.name, self.home = name, RUN / name
         self.port = str(47900 + Machine.count)
+        self.file_port = str(48900 + Machine.count)
         self.home.mkdir(parents=True)
+        self.downloads = RUN / f'{name}-downloads'      # like ~/Downloads: never inside Dropship's own folder
         (self.home / 'transcripts').mkdir()
         self.env = dict(os.environ, DROPSHIP_SESSION='', CODEX_THREAD_ID='', DROPSHIP_HOME=str(self.home), DROPSHIP_PORT=self.port, DROPSHIP_UDP=UDP,
+                        DROPSHIP_FILE_PORT=self.file_port, DROPSHIP_DOWNLOADS=str(self.downloads),
                         DROPSHIP_VENV=str(VENV))
         self.py(f"""
 c = d.config(); c['homes'] = {{d.network()['fingerprint']: 'test'}} if {home_wifi} else {{}}; d.save(d.CONFIG, c)
@@ -515,6 +518,48 @@ def test_network_secret_file(a, b, c, d):
 
 
 # ------------------------------------------------------------------------------------------------------------ runner
+def test_network_file_direct(a, b, c, d):
+    """--network: a 20 MB file alice → carol over the direct route (carol's person typed "hypernym dropship files alice
+    auto", so it is accepted without asking); the bytes never appear in any output or inbox; carol gets one notice,
+    alice gets one receipt."""
+    import hashlib
+    blob = os.urandom(20 * 1024 * 1024)
+    src = a.home.parent / 'alice-project' / 'big.bin'     # a normal folder, not Dropship's own state
+    src.parent.mkdir(exist_ok=True)
+    src.write_bytes(blob)
+    sender = a.session('a-files-22', 'Files')
+    inbox_s = c.session('c-files-23', 'Inbox')
+    flag = inbox_s.send('hypernym dropship files alice auto')       # typed by carol's person: the only way to set it
+    check('files: auto' in flag, flag)
+    check('files: auto' in c.cli('friends'), 'the flag shows in the friends listing')
+    out = a.cli('file-offer', str(src), '#carol', extra_env={'DROPSHIP_SESSION': sender.sid})
+    m = re.search(r'(fx_[0-9a-f]{16})', out)
+    check(m and 'offered' in out, out)
+    tid = m.group(1)
+    landed = c.downloads / 'Dropship' / 'alice' / 'big.bin'
+    wait(lambda: landed.exists(), 120, 'carol has the file')
+    check(hashlib.sha256(landed.read_bytes()).digest() == hashlib.sha256(blob).digest(), 'identical bytes')
+    aid = a.py("print(d.identity()['id'])")
+    route = c.py(f"import json; print(json.loads((d.HOME / 'files' / 'in' / '{aid}-{tid}.json').read_text())['route'])")
+    check(route == 'direct', f'the transfer used the direct route, not {route!r}')
+    wait(lambda: any(tid in x['body'] and 'saved' in x['body'] for x in c.inbox()), 20, 'carol notified')
+    wait(lambda: any(tid in x['body'] and 'saved by' in x['body'] for x in a.inbox()), 60, 'alice gets the receipt')
+    notes = [x for x in a.inbox() + c.inbox() if tid in x['body']]
+    check(notes and all(len(x['body']) < 600 for x in notes), 'only short one-line notices about the file')
+
+
+def test_network_long_message_as_file(a, b, c, d):
+    """--network: a message longer than one message is delivered as ONE file plus a one-line notice."""
+    sender = a.session('a-files-22', 'Files')
+    text = 'burndown line\n' * 2000                        # ~28 KB
+    out = a.cli('send', '#carol', text, extra_env={'DROPSHIP_SESSION': sender.sid})
+    check('long message' in out and 'offered' in out, out)
+    wait(lambda: any('[long message' in x['body'] for x in c.inbox()), 120, 'carol gets the long message notice')
+    note = [x for x in c.inbox() if '[long message' in x['body']][-1]['body']
+    path = note.split('saved to ', 1)[1].split(' . Friend', 1)[0]
+    check(Path(path).read_text() == text, 'the whole message arrived as one file')
+
+
 def test_network_tracer(a, b, c, d):
     origin = a.session('tracer-origin', 'Codex Origin')
     receiver = c.session('tracer-receiver', 'Claude Receiver')
