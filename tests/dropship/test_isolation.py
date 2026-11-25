@@ -50,8 +50,8 @@ class IsolationTests(unittest.TestCase):
             d.save(d.SESSIONS / f'{sid}.json', {'n': 0, 'name': name, 'title': name, 'cwd': '/tmp', 'seen': time.time(),
                                                  'scan': 0, 'transcript': '', 'exposed': True, 'pid': 0, 'tty': '',
                                                  'app': '', 'borg': True})
-        d.save(d.FRIENDS, {TEAM: {'name': 'teammate', 'pub': 'aa', 'box': 'bb', 'how': 'paired'},
-                           'benito00': {'name': 'benito', 'pub': 'cc', 'box': 'dd', 'how': 'paired'}})
+        d.save(d.FRIENDS, {TEAM: {'name': 'teammate', 'pub': 'aa', 'box': 'bb', 'how': 'paired', 'own': True},
+                           'benito00': {'name': 'benito', 'pub': 'cc', 'box': 'dd', 'how': 'paired', 'own': True}})
 
     def test_existing_friends_keep_full_access(self):
         deliver('benito', 'hi transport', 'transportsession')

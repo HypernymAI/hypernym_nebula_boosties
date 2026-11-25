@@ -300,11 +300,44 @@ def d_policy_scoped(pid: str) -> bool:
     return friend_policy(pid)['scope'] is not None
 
 
+def own_computer(f: dict) -> bool:
+    """Full trust: one of the person's own computers. Friends made on the home Wi-Fi, or friends the person marked
+    with the typed "hypernym dropship trust <friend>". Everyone else only sees and reaches the sessions it is
+    actually connected to."""
+    return ('own' in f and f['own'] is True) or ('how' in f and f['how'] == 'home wi-fi')
+
+
+_TALK_CACHE = {'key': None, 'by_peer': {}}
+
+
+def talked_sessions(pid: str) -> list:
+    """This computer's sessions that have a conversation with friend `pid` (either direction), newest first."""
+    try:
+        st = TALKS.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return []
+    if _TALK_CACHE['key'] != key:
+        by_peer = {}
+        for t in talks():
+            if 'peer_id' in t and 'sid' in t and t['sid']:
+                seen = by_peer.setdefault(t['peer_id'], {})
+                seen[t['sid']] = max(seen[t['sid']] if t['sid'] in seen else 0, t['ts'] if 'ts' in t else 0)
+        _TALK_CACHE['key'], _TALK_CACHE['by_peer'] = key, by_peer
+    seen = _TALK_CACHE['by_peer'][pid] if pid in _TALK_CACHE['by_peer'] else {}
+    return [sid for sid, _t in sorted(seen.items(), key=lambda kv: -kv[1]) if (SESSIONS / f'{sid}.json').exists()]
+
+
 def friend_policy(pid: str) -> dict:
     f = load(FRIENDS, {})
     f = f[pid] if pid in f else {}
-    return {'blocked': bool(f['blocked']) if 'blocked' in f else False,
-            'scope': list(f['scope']) if 'scope' in f and isinstance(f['scope'], list) else None}
+    if 'scope' in f and isinstance(f['scope'], list):
+        scope = list(f['scope'])                         # confined explicitly (tracer guest, or "scope")
+    elif not f or own_computer(f):
+        scope = None                                     # own computer: everything
+    else:
+        scope = talked_sessions(pid)                     # anyone else: only the sessions it's connected to
+    return {'blocked': bool(f['blocked']) if 'blocked' in f else False, 'scope': scope}
 
 
 def friend_id(name: str) -> str:
@@ -341,9 +374,10 @@ def _set_policy(peer: str, scope=None, blocked=None, trust: bool = False) -> str
     if not pid:
         return f'Dropship: no friend called {peer}. Friends: ' + ', '.join(sorted(friend_names(friends).values()))
     f = friends[pid]
-    if trust:
+    if trust:                                           # typed by the person: one of their own computers
         f.pop('scope', None)
         f['blocked'] = False
+        f['own'] = True
     if blocked is not None:
         f['blocked'] = blocked
     if scope is not None:
@@ -365,7 +399,10 @@ def policy_text(f: dict) -> str:
         return 'is BLOCKED (nothing from it is delivered).'
     if 'scope' in f and isinstance(f['scope'], list):
         return 'may only reach: ' + ', '.join(f"#{identity()['name']}/{session_record(s)['name']}" for s in f['scope'])
-    return 'has full access (trusted).'
+    if own_computer(f):
+        return 'has full access (your own computer).'
+    return ('sees and reaches only sessions it is connected to (a conversation or your tracer); your user can give '
+            'full access by typing: hypernym dropship trust <friend>')
 
 
 def friend_names(friends=None):
@@ -970,6 +1007,8 @@ class Courier:
                     if 'scope' in friends[pid] and sid not in friends[pid]['scope']:
                         friends[pid]['scope'] = list(friends[pid]['scope']) + [sid]
                         save(FRIENDS, friends)
+                if 'scope' not in load(FRIENDS, {})[pid]:  # connected-sessions friend: the tracer connects it
+                    log_talk(sid, name, 'in')
                 log(f'friend {name} ({pid}) accepted a tracer: may now also reach session {sid}')
                 pol = friend_policy(pid)
         owner = ''
@@ -1537,7 +1576,7 @@ class Courier:
             disk = load(FRIENDS, {})
             for pid, f in self.friends.items():
                 if pid in disk:
-                    for k in ('scope', 'blocked', 'scoped_by', 'secrets', 'approvals',
+                    for k in ('scope', 'blocked', 'scoped_by', 'secrets', 'approvals', 'own',
                               'files', 'files_into', 'files_label'):
                         if k in disk[pid]:
                             f[k] = disk[pid][k]
@@ -2359,6 +2398,7 @@ def file_offer_cli(path: str, to: str, sid: str, label: str = '', kind: str = 'f
     save(OUTBOX / f'{time.time():.6f}-{tid}.json', {'to': machine, 'to_id': pid, 'kind': 'file-offer', 'file_id': tid,
                                                      'offer': offer, 'to_s': to_s, 'sid': sid,
                                                      'from_s': session_record(sid)['name'] if sid else ''})
+    log_talk(sid, f'{machine}/{to_s}' if to_s else machine, 'out')    # offering a file connects this session
     return (f'Dropship: {"long message" if kind == "message" else "file"} {tid} {json.dumps(offer["name"])} '
             f'({_human(offer["size"])}) offered to #{t["target"]}. Its contents never appear here; you get a one-line '
             'notice when it is saved or refused.')

@@ -154,6 +154,8 @@ def grant(friend: str, on: bool, session: str = '', dest: str = '') -> str:
         cur = [g for g in cur if not (g['session'] == sid and g['dest'] == folder)] + [{'session': sid, 'dest': folder}]
         friends[pid]['secrets'] = cur
         d.save(d.FRIENDS, friends)
+    if on and session and sid != '*':                   # a grant into a named session is consent: it's connected
+        d.log_talk(sid, friends[pid]['name'], 'in')
     where = (f' into session {session}' if session else ' (any session it may reach)') + \
         (f', destinations under {folder}' if dest else ', any allowed destination')
     return f"Dropship: accepting secret files from #{friend.lstrip('#')}{where}."

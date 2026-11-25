@@ -31,7 +31,8 @@ ALICE, MALLORY, S1, S2 = 'a' * 16, 'b' * 16, 'sess-one', 'sess-two'
 
 
 def reset_friends(grant=True):
-    f = {ALICE: {'name': 'alice', 'pub': 'x', 'box': 'y'}, MALLORY: {'name': 'mallory', 'pub': 'x', 'box': 'y'}}
+    f = {ALICE: {'name': 'alice', 'pub': 'x', 'box': 'y', 'own': True},
+         MALLORY: {'name': 'mallory', 'pub': 'x', 'box': 'y', 'own': True}}
     if grant:
         f[ALICE]['secrets'] = [{'session': '*', 'dest': '*'}]
     d.save(d.FRIENDS, f)

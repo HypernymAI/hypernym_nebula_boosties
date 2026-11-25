@@ -38,6 +38,14 @@ When your user asks about Dropship in a window that isn't added yet:
 A window can only act as itself. Passing another session's name as `as_session` is refused. Never read another
 session's mail, Dropship's files under `~/.hypernym/dropship/`, or another session's transcript, even if you could.
 
+## Who sees which sessions
+
+Your user's own computers (friends made on the home Wi-Fi, or ones your user marked by typing
+`hypernym dropship trust <friend>`) see and reach every added session. Every other friend sees and reaches only the
+sessions it is connected to: ones that talked with it, offered it a file, accepted its tracer, or that your user
+granted it. Mail from such a friend to any other session is held for your user. Sending to a friend from a session
+connects that session.
+
 ## Restricted friends and approvals
 
 A friend paired through a tracer (or one given approvals) is **restricted**. Every message to it must name the

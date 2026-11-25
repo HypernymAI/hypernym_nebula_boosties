@@ -108,11 +108,11 @@ class Base(unittest.TestCase):
         session('beta-sid', 'beta', 200)
         session('gamma-sid', 'gamma', 300, exposed=False)
         d.save(d.FRIENDS, {
-            NICK: {'name': 'nick', 'pub': PUB, 'box': 'k'},
-            RES: {'name': 'rita', 'pub': PUB, 'box': 'k', 'approvals': []},
+            NICK: {'name': 'nick', 'pub': PUB, 'box': 'k', 'own': True},
+            RES: {'name': 'rita', 'pub': PUB, 'box': 'k', 'approvals': [], 'own': True},
             SCOPED: {'name': 'sam', 'pub': PUB, 'box': 'k', 'scope': ['alpha-sid'], 'scoped_by': 'tracer'},
-            BLOCKED: {'name': 'bert', 'pub': PUB, 'box': 'k', 'blocked': True},
-            NOBOX: {'name': 'lan', 'pub': PUB},
+            BLOCKED: {'name': 'bert', 'pub': PUB, 'box': 'k', 'blocked': True, 'own': True},
+            NOBOX: {'name': 'lan', 'pub': PUB, 'own': True},
         })
         with d._files_lock:
             d._LONG_AUTO.clear()

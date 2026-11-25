@@ -499,6 +499,7 @@ def test_network_secret_file(a, b, c, d):
     check(not list((c.home / 'secrets').glob('*-sx_*')) if (c.home / 'secrets').exists() else True,
           'ungranted secret must not be staged')
     keeper = c.session('c-keeper-21', 'Keeper')              # carol's session that receives it
+    check('sent' in keeper.send('#alice hi from keeper'), 'carol\'s keeper says hello first (a connection)')
     check('say which session' in c.cli('secret-allow', 'alice'), 'no implicit wildcard grants')
     check('accepting' in c.cli('secret-allow', 'alice', '--session', 'keeper', '--dest', str(c.home)), 'scoped grant')
     out = a.cli('secret-offer', str(src), '#carol', '--label', 'API key', '--move', extra_env={'DROPSHIP_SESSION': t.sid})
@@ -543,6 +544,7 @@ def test_network_file_direct(a, b, c, d):
     src.write_bytes(blob)
     sender = a.session('a-files-22', 'Files')
     inbox_s = c.session('c-files-23', 'Inbox')
+    check('sent' in inbox_s.send('#alice/files ready for files'), 'carol\'s inbox greets alice first (a connection)')
     flag = inbox_s.send('hypernym dropship files alice auto')       # typed by carol's person: the only way to set it
     check('files: auto' in flag, flag)
     check('files: auto' in c.cli('friends'), 'the flag shows in the friends listing')

@@ -144,6 +144,7 @@ def connect(token, name=''):
     target = d.addr(friend['name'], value['session'])
     body = CONTROL + json.dumps({'kind': 'hello', 'nonce': value['nonce']})
     # Use the encrypted mailbox even on LAN: this checks the long-range path.
+    d.log_talk(sid, f"{friend['name']}/{value['session']}", 'out')   # accepting a tracer connects this session
     result = d.send_mail(friend['name'], body, value['session'], r['name'], sid, value['id'])
     if result != 'ok':
         return f'{target}: {result}. Receipt is not confirmed; retry before the tracer expires.'
